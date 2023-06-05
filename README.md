@@ -1,4 +1,4 @@
-# Algorithmic Trading Bot
+# SmartTraderGM
 
 This project is a Python-based algorithmic trading bot capable of executing buy and sell orders for ETFs and stocks on the Alpaca Paper Market. The bot implements robust and well-founded trading strategies, ensuring optimal risk management and consistent profitability.
 
