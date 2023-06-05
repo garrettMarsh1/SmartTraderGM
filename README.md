@@ -52,3 +52,4 @@ python main.py
 ## Contributing
 
 Feel free to submit pull requests or open issues to improve the trading bot. Please follow best practices in Python programming and algorithmic trading, and ensure that you document your code and follow a consistent style guide for better readability and maintainability.
+The UI is in progress found in the folder smarttrader-ui. It will contain a live feed of all of the data coming in to the trading algorithm, as well as all of the signals and important details from the trading data.
