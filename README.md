@@ -30,10 +30,12 @@ pip install -r requirements.txt
 4. Set up your API keys as environment variables:
 
 ```
-export TIINGO_API_KEY="your_tiingo_api_key"
-export ALPACA_API_KEY="your_alpaca_api_key"
-export ALPACA_SECRET_KEY="your_alpaca_secret_key"
-export ALPACA_BASE_URL="https://paper-api.alpaca.markets"
+It is reccomended to save your api keys as environment variables. 
+
+TIINGO_API_KEY=os.environ.get("your_api_key")
+ALPACA_API_KEY=os.environ.get("your_api_key")
+ALPACA_SECRET_KEY=os.environ.get("your_api_key")
+ALPACA_BASE_URL="https://paper-api.alpaca.markets"
 ```
 
 ## Usage
