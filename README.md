@@ -7,7 +7,7 @@ This project is a Python-based algorithmic trading bot capable of executing buy 
 1. Clone the repository:
 
 ```
-git clone https://github.com/yourusername/algorithmic-trading-bot.git
+git clone 
 cd algorithmic-trading-bot
 ```
 
