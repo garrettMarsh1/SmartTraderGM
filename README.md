@@ -7,7 +7,7 @@ This project is a Python-based algorithmic trading bot capable of executing buy 
 1. Clone the repository:
 
 ```
-git clone 
+git clone https://github.com/garrettMarsh1/SmartTraderGM.git
 cd algorithmic-trading-bot
 ```
 
