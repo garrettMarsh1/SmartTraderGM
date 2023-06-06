@@ -114,42 +114,81 @@ def generate_trading_signals(df, portfolio, market_regime):
     signals['num_shares'] = 0
     signals['profit'] = 0.0
     signals['signal'] = 'hold'
+    signals['short_sell_price'] = 0.0
+    signals['num_shares_shorted'] = 0
 
     bullish_cross = (df['macd'] > df['macd_signal']) & (df['sma_50'] > df['sma_200'])
     oversold_condition = (df['rsi'] < 30) & (df['close'] < df['lower_bb'])
     stoch_oversold = (df['slowk'] < 20) & (df['slowd'] < 20) & (df['close'] < df['lower_bb'])
     bullish_ichimoku = (df['close'] > df['senkou_span_a']) & (df['senkou_span_a'] > df['senkou_span_b'])
     buy_signals_fib = (df['close'] > df['fib_0']) & (df['close'] < df['fib_0.236'])
+    short_signals_fib = (df['close'] > df['fib_0.786']) & (df['close'] < df['fib_1'])
 
     bearish_cross = (df['macd'] < df['macd_signal']) & (df['sma_50'] < df['sma_200'])
     overbought_condition = (df['rsi'] > 70) & (df['close'] > df['upper_bb'])
     stoch_overbought = (df['slowk'] > 80) & (df['slowd'] > 80) & (df['close'] > df['upper_bb'])
     bearish_ichimoku = (df['close'] < df['senkou_span_a']) | (df['close'] < df['senkou_span_b'])
     sell_signals_fib = (df['close'] > df['fib_0.786']) & (df['close'] < df['fib_1'])
+    cover_signals_fib = (df['close'] > df['fib_0']) & (df['close'] < df['fib_0.236'])
 
 
-    # Count the total number of buy and sell conditions
-    buy_conditions = [bullish_cross, oversold_condition, bullish_ichimoku, buy_signals_fib, stoch_oversold]
-    sell_conditions = [bearish_cross, overbought_condition, bearish_ichimoku, sell_signals_fib, stoch_overbought]
-    total_buy = sum(condition.any() for condition in buy_conditions)
-    total_sell = sum(condition.any() for condition in sell_conditions)
+
+    # Define weights
+    weights = {
+        "bullish_cross": 2,
+        "oversold_condition": 1.5,
+        "stoch_oversold": 1,
+        "bullish_ichimoku": 3,
+        "buy_signals_fib": 2,
+        "bearish_cross": 2,
+        "overbought_condition": 1.5,
+        "stoch_overbought": 1,
+        "bearish_ichimoku": 3,
+        "sell_signals_fib": 2,
+        "short_signals_fib": 2,
+        "cover_signals_fib": 2
+    }
+
+    # Modify your signal calculation
+    buy_score = weights["bullish_cross"]*bullish_cross + weights["oversold_condition"]*oversold_condition + weights["stoch_oversold"]*stoch_oversold + weights["bullish_ichimoku"]*bullish_ichimoku + weights["buy_signals_fib"]*buy_signals_fib
+
+    sell_score = weights["bearish_cross"]*bearish_cross + weights["overbought_condition"]*overbought_condition + weights["stoch_overbought"]*stoch_overbought + weights["bearish_ichimoku"]*bearish_ichimoku + weights["sell_signals_fib"]*sell_signals_fib
+
+    short_score = weights["bearish_cross"]*bearish_cross + weights["overbought_condition"]*overbought_condition + weights["stoch_overbought"]*stoch_overbought + weights["bearish_ichimoku"]*bearish_ichimoku + weights["short_signals_fib"]*short_signals_fib
+
+    cover_score = weights["bullish_cross"]*bullish_cross + weights["oversold_condition"]*oversold_condition + weights["stoch_oversold"]*stoch_oversold + weights["bullish_ichimoku"]*bullish_ichimoku + weights["cover_signals_fib"]*cover_signals_fib
+
     # print(f"current buying power: {portfolio.buying_power}")
 
 
     # Generate the overall signal
-    if total_buy > total_sell and portfolio.buying_power > df['close'].mean():
+    if (buy_score > sell_score).all() and (portfolio.buying_power > df['close'].mean()).all():
+
         signals['signal'] = 'buy'
         signals['buy_price'] = df['close'].mean()
         signals['num_shares'] = portfolio.buying_power // signals['buy_price']
         signals['profit'] = signals['num_shares'] * (df['close'].mean() - signals['buy_price'])
         # print(f"Generated signal: {signals['signal'].values[0]} for symbol {signals['symbol'].values[0]}")
 
-    elif total_sell > total_buy and any(symbol in portfolio.positions for symbol in df['symbol']):
+    elif (sell_score > buy_score).all() and any(symbol in portfolio.positions for symbol in df['symbol']):
         signals['signal'] = 'sell'
         signals['buy_price'] = df['close'].mean()
         signals['num_shares'] = portfolio.positions[df['symbol'].any()]
         signals['profit'] = signals['num_shares'] * (signals['buy_price'] - df['close'].mean())
         # print(f"Generated signal: {signals['signal'].values[0]} for symbol {signals['symbol'].values[0]}")
+    
+        # Short the stock
+    elif (short_score > buy_score).all() and portfolio.buying_power > df['close'].mean():
+        signals['signal'] = 'short'
+        signals['short_sell_price'] = df['close'].mean()
+        signals['num_shares_shorted'] = portfolio.buying_power // signals['short_sell_price']
+        signals['profit'] = signals['num_shares_shorted'] * (signals['short_sell_price'] - df['close'].mean())
+    # Cover the short
+    elif (cover_score > short_score).all() and any(symbol in portfolio.short_positions for symbol in df['symbol']):
+        signals['signal'] = 'cover'
+        signals['short_sell_price'] = df['close'].mean()
+        signals['num_shares_shorted'] = portfolio.short_positions[df['symbol'].any()]
+        signals['profit'] = signals['num_shares_shorted'] * (df['close'].mean() - signals['short_sell_price'])
 
     else:
         signals['signal'] = 'hold'
@@ -163,25 +202,3 @@ def generate_trading_signals(df, portfolio, market_regime):
 
 
 
-
-
-
-    # # Different conditions based on the market_regime
-    # if market_regime == 'bullish':
-    #     print('bullish market')
-    #     buy_signals = bullish_cross | oversold_condition | bullish_ichimoku | buy_signals_fib | stoch_oversold
-    #     sell_signals = bearish_cross | overbought_condition | bearish_ichimoku | sell_signals_fib | stoch_overbought
-    # elif market_regime == 'bearish':
-    #     print('bearish market')
-    #     buy_signals = bullish_cross & oversold_condition & bullish_ichimoku & buy_signals_fib & stoch_oversold
-    #     sell_signals = bearish_cross | overbought_condition | bearish_ichimoku | sell_signals_fib | stoch_overbought
-    # elif market_regime == 'low_volatility':
-    #     print('low volatility market')
-    #     # Prefer range trading strategies for low volatility
-    #     buy_signals = oversold_condition | stoch_oversold
-    #     sell_signals = overbought_condition | stoch_overbought
-    # else:  # 'high_volatility'
-    #     print('high volatility market')
-    #     # Prefer breakout strategies for high volatility
-    #     buy_signals = bullish_cross | bullish_ichimoku
-    #     sell_signals = bearish_cross | bearish_ichimoku

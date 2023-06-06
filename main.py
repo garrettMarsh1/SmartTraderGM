@@ -23,17 +23,20 @@ def main():
 
     # print the portfolio positions
     print(portfolio.positions)
-    # portfolio.manage_risk()
-    # portfolio.update_positions()
-    # portfolio.optimize_portfolio()
-    
+
+    short_positions = portfolio.get_short_positions()
+    print(short_positions)
+
 
     # Get start and end dates
     end_date = datetime.datetime.now()
-    start_date = end_date - datetime.timedelta(days=7)
+    start_date = end_date - datetime.timedelta(days=1)
     # start_date = datetime.datetime(2023, 6, 2)
 
     symbols = ['CG', 'ARES', 'BX', 'ALC', 'BSTZ', 'COLD', 'ET', 'FLEX', 'MX', 'MRK', 'GE', 'LIN', 'LMT', 'NOC', 'RTX', 'TSLA', 'WMT', 'ZM', 'NVDA', 'MSFT', 'AAPL', 'GOOGL']
+
+
+
 
     while True:
         try:
@@ -102,32 +105,5 @@ if __name__ == "__main__":
     main()
 
 
-
-
-# def get_secrets(**kwargs):
-#     secret = {}
-#     secret['username'] = Variable.get(secret_name, defaulkt_bar = 'undefined', deserialize_json = True)['username']
-#     secret['password'] = Variable.get(secret_name, defaulkt_bar = 'undefined', deserialize_json = True)['password']
-#     secret['url'] = Variable.get(secret_name, defaulkt_bar = 'undefined', deserialize_json = True)['url']
-#     return secret
-
-# def check_jobs(context):
-#     secret = context['secret']
-
-#     ...logic to check jobs...
-
-# .... DAG code ...
-
-# get_secret = PythonOperator(
-#     task_id = 'get_secret',
-#     python_callable = get_secrets,
-#     provide_context=True)
-
-# check_jobs = PythonOperator(
-#     task_id = 'check_jobs',
-#     python_callable = check_jobs,
-#     provide_context=True,
-#     op_args = ['xcom_pull(task_ids = "get_secret", key = "secret")']
-#     )
 
                                                                                                         

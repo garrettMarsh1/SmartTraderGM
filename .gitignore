@@ -2,3 +2,4 @@ data/
 market_regime_data/
 signals/
 pycache/
+node_modules/

@@ -28,6 +28,7 @@ class Portfolio:
 
         # Initialize portfolio with existing positions
         self.update_positions()
+        
 
     def check_rate_limit(self):
         # Add 1 to the number of requests made
@@ -85,6 +86,69 @@ class Portfolio:
         elif signal == 'sell':
             print(f"Executing sell for {symbol}.")
             self.sell(symbol)
+        elif signal == 'short':
+            print(f"Executing short for {symbol}.")
+            self.short(symbol)
+        elif signal == 'cover':
+            print(f"Executing cover for {symbol}.")
+            self.cover(symbol)
+            
+    def short(self, symbol):
+        self.check_rate_limit()
+        qty = self.calculate_buy_quantity(symbol, 0.1)  # 10% fraction to invest
+        if qty > self.min_qty:
+            if symbol not in self.positions:
+                self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
+            
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=round(qty, 6) if qty >= 1 else qty,
+                side='sell',
+                type='market',
+                time_in_force='day'
+            )
+
+            while order.status != 'filled':
+                order = self.api.get_order(order.id)
+
+            self.positions[symbol]['shares'] -= qty
+            self.update_positions()
+            print(f"Shorted {qty} shares of {symbol} at {order.filled_avg_price}.")
+            self.positions[symbol]['buy_price'] = float(order.filled_avg_price)
+
+            # Update the buying power after the short
+            self.buying_power += qty * self.positions[symbol]['buy_price']
+
+    def cover(self, symbol, loss_threshold=0.95):
+        self.check_rate_limit()
+        qty = self.calculate_sell_quantity(symbol, 0.1)  # 10% fraction to sell
+
+        if qty > self.min_qty:
+            if symbol in self.positions and self.positions[symbol]['shares'] < 0:
+                current_price = float(self.api.get_latest_trade(symbol).price)
+                loss_ratio = current_price / self.positions[symbol]['buy_price']
+
+                if loss_ratio <= loss_threshold:
+                    order = self.api.submit_order(
+                        symbol=symbol,
+                        qty=round(qty, 6) if qty >= 1 else qty,
+                        side='buy',
+                        type='market',
+                        time_in_force='day'
+                    )
+
+                    while order.status != 'filled':
+                        order = self.api.get_order(order.id)
+
+                    self.positions[symbol]['shares'] += qty
+                    self.update_positions()
+                    print(f"Covered {qty} shares of {symbol} at {current_price} for a loss of {loss_ratio}.")
+
+                    if self.positions[symbol]['shares'] == 0:
+                        self.positions[symbol]['buy_price'] = 0.0
+
+                    # Update the buying power after the cover
+                    self.buying_power -= qty * current_price
 
     min_qty = 0.001  # define the minimum order quantity suitable for fractional trading
 
@@ -108,6 +172,7 @@ class Portfolio:
                 # Wait for the order to fill
                 while order.status != 'filled':
                     order = self.api.get_order(order.id)
+                    print('Waiting for order fill...')
                     # time.sleep(.1)
 
                 self.positions[symbol]['shares'] += qty
@@ -157,11 +222,17 @@ class Portfolio:
                 self.buying_power += qty * current_price
 
 
+    def get_buying_power(self):
+        self.check_rate_limit()
+        return float(self.api.get_account().buying_power)
+
+
     def get_latest_price(self, symbol):
         self.check_rate_limit()
         return float(self.api.get_latest_trade(symbol).price)
 
     def calculate_buy_quantity(self, symbol, fraction):
+        self.check_rate_limit()
         """
         Calculate the quantity to buy for a symbol.
 
@@ -188,6 +259,7 @@ class Portfolio:
 
     
     def calculate_sell_quantity(self, symbol, fraction):
+        self.check_rate_limit()
         """
         Calculate the quantity to sell for a symbol.
 
@@ -222,6 +294,7 @@ class Portfolio:
         params = {"startDate": start_date.strftime('%Y-%m-%d'), "endDate": end_date.strftime('%Y-%m-%d')}
         
         response = requests.get(url, headers=headers, params=params)
+        # print(response.text)
         data = response.json()
 
         if not data:
@@ -268,52 +341,62 @@ class Portfolio:
 
 
 
-    def adjust_parameters(self, symbol, volatility):
-        volatility_score = (volatility['ATR'] + volatility['STDDEV']) / 2
-        scaler = MinMaxScaler(feature_range=(14, 28))
-        volatility_array = np.array(volatility_score).reshape(-1, 1)
-        rsi_period = int(scaler.fit_transform(volatility_array)[0][0])
+    def get_short_positions(self):
+        self.check_rate_limit()
+        short_positions = {}
+        for symbol, position_data in self.positions.items():
+            if position_data['shares'] < 0:
+                short_positions[symbol] = position_data
+        return short_positions
 
-        return {'rsi_period': rsi_period}
+
+
+
+
+
+
+
+
+
+    # def adjust_parameters(self, symbol, volatility):
+    #     volatility_score = (volatility['ATR'] + volatility['STDDEV']) / 2
+    #     scaler = MinMaxScaler(feature_range=(14, 28))
+    #     volatility_array = np.array(volatility_score).reshape(-1, 1)
+    #     rsi_period = int(scaler.fit_transform(volatility_array)[0][0])
+
+    #     return {'rsi_period': rsi_period}
     
 
-    def optimize_portfolio(self):
-        # Get the current portfolio
-        self.check_rate_limit()
-        current_portfolio = self.api.list_positions()
+    # def optimize_portfolio(self):
+    #     # Get the current portfolio
+    #     self.check_rate_limit()
+    #     current_portfolio = self.api.list_positions()
 
-        # Calculate the equal weight for each asset
-        equal_weight = 1.0 / len(current_portfolio)
+    #     # Calculate the equal weight for each asset
+    #     equal_weight = 1.0 / len(current_portfolio)
 
-        # Adjust the portfolio to the target weights
-        for position in current_portfolio:
-            symbol = position.symbol
-            target_quantity = equal_weight * self.api.get_account().cash
-            self.api.submit_order(symbol, target_quantity, 'buy', 'limit', 'day')
-
-
-    def manage_risk(self):
-        # Get the current portfolio
-        self.check_rate_limit()
-
-        current_portfolio = self.api.list_positions()
-
-        # Set a market sell order for each asset
-        for position in current_portfolio:
-            symbol = position.symbol
-            qty = float(position.qty)
-            if qty > self.min_qty:
-                self.api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side='sell',
-                    type='market',
-                    time_in_force='day'
-                )
+    #     # Adjust the portfolio to the target weights
+    #     for position in current_portfolio:
+    #         symbol = position.symbol
+    #         target_quantity = equal_weight * self.api.get_account().cash
+    #         self.api.submit_order(symbol, target_quantity, 'buy', 'limit', 'day')
 
 
+    # def manage_risk(self):
+    #     # Get the current portfolio
+    #     self.check_rate_limit()
 
+    #     current_portfolio = self.api.list_positions()
 
-
-
-
+    #     # Set a market sell order for each asset
+    #     for position in current_portfolio:
+    #         symbol = position.symbol
+    #         qty = float(position.qty)
+    #         if qty > self.min_qty:
+    #             self.api.submit_order(
+    #                 symbol=symbol,
+    #                 qty=qty,
+    #                 side='sell',
+    #                 type='market',
+    #                 time_in_force='day'
+    #             )
