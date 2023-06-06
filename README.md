@@ -1,4 +1,4 @@
-# Algorithmic Trading Bot
+# SmartTraderGM
 
 This project is a Python-based algorithmic trading bot capable of executing buy and sell orders for ETFs and stocks on the Alpaca Paper Market. The bot implements robust and well-founded trading strategies, ensuring optimal risk management and consistent profitability.
 
@@ -7,7 +7,7 @@ This project is a Python-based algorithmic trading bot capable of executing buy 
 1. Clone the repository:
 
 ```
-git clone https://github.com/yourusername/algorithmic-trading-bot.git
+git clone https://github.com/garrettMarsh1/SmartTraderGM.git
 cd algorithmic-trading-bot
 ```
 
@@ -30,10 +30,12 @@ pip install -r requirements.txt
 4. Set up your API keys as environment variables:
 
 ```
-export TIINGO_API_KEY="your_tiingo_api_key"
-export ALPACA_API_KEY="your_alpaca_api_key"
-export ALPACA_SECRET_KEY="your_alpaca_secret_key"
-export ALPACA_BASE_URL="https://paper-api.alpaca.markets"
+It is reccomended to save your api keys as environment variables. 
+
+TIINGO_API_KEY=os.environ.get("your_api_key")
+ALPACA_API_KEY=os.environ.get("your_api_key")
+ALPACA_SECRET_KEY=os.environ.get("your_api_key")
+ALPACA_BASE_URL="https://paper-api.alpaca.markets"
 ```
 
 ## Usage
