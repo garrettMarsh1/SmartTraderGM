@@ -8,7 +8,7 @@ This project is a Python-based algorithmic trading bot capable of executing buy 
 
 ```
 git clone https://github.com/garrettMarsh1/SmartTraderGM.git
-cd algorithmic-trading-bot
+cd smarttrader-ui
 ```
 
 2. Create a virtual environment and activate it:
