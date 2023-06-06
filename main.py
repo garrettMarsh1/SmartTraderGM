@@ -33,7 +33,7 @@ def main():
     start_date = end_date - datetime.timedelta(days=1)
     # start_date = datetime.datetime(2023, 6, 2)
 
-    symbols = ['CG', 'ARES', 'BX', 'ALC', 'BSTZ', 'COLD', 'ET', 'FLEX', 'MX', 'MRK', 'GE', 'LIN', 'LMT', 'NOC', 'RTX', 'TSLA', 'WMT', 'ZM', 'NVDA', 'MSFT', 'AAPL', 'GOOGL']
+    symbols = ['SPY']
 
 
 
@@ -70,9 +70,9 @@ def main():
                     
 
                     data = calculate_technical_indicators(data)
-                    df = calculate_technical_indicators(df)
-                    df_json = data.to_json(orient='split')
-                    socket.emit('chart_data', df_json)
+
+                    # df_json = data.to_json(orient='split')
+                    # socket.emit('chart_data', df_json)
                     #fill na with 0 for data
                     data = data.fillna(0)
                     data = data[data['sma_200'] != 0.0]

@@ -184,10 +184,10 @@ def generate_trading_signals(df, portfolio, market_regime):
         signals['num_shares_shorted'] = portfolio.buying_power // signals['short_sell_price']
         signals['profit'] = signals['num_shares_shorted'] * (signals['short_sell_price'] - df['close'].mean())
     # Cover the short
-    elif (cover_score > short_score).all() and any(symbol in portfolio.short_positions for symbol in df['symbol']):
+    elif (cover_score > short_score).all() and any(symbol in portfolio.get_short_positions() for symbol in df['symbol']):
         signals['signal'] = 'cover'
         signals['short_sell_price'] = df['close'].mean()
-        signals['num_shares_shorted'] = portfolio.short_positions[df['symbol'].any()]
+        signals['num_shares_shorted'] = portfolio.get_short_positions()[df['symbol'].any()]
         signals['profit'] = signals['num_shares_shorted'] * (df['close'].mean() - signals['short_sell_price'])
 
     else:

@@ -95,10 +95,15 @@ class Portfolio:
             
     def short(self, symbol):
         self.check_rate_limit()
-        qty = self.calculate_buy_quantity(symbol, 0.1)  # 10% fraction to invest
+        qty = round(self.calculate_buy_quantity(symbol, 0.06))  # 10% fraction to invest
         if qty > self.min_qty:
             if symbol not in self.positions:
                 self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
+
+            total_cost = qty * self.get_latest_price(symbol)
+            if total_cost > self.buying_power:
+                print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
+                return            
             
             order = self.api.submit_order(
                 symbol=symbol,
@@ -121,12 +126,15 @@ class Portfolio:
 
     def cover(self, symbol, loss_threshold=0.95):
         self.check_rate_limit()
-        qty = self.calculate_sell_quantity(symbol, 0.1)  # 10% fraction to sell
+        qty = round(self.calculate_sell_quantity(symbol, 0.06))  # 10% fraction to sell
 
         if qty > self.min_qty:
             if symbol in self.positions and self.positions[symbol]['shares'] < 0:
                 current_price = float(self.api.get_latest_trade(symbol).price)
                 loss_ratio = current_price / self.positions[symbol]['buy_price']
+
+
+
 
                 if loss_ratio <= loss_threshold:
                     order = self.api.submit_order(
@@ -139,6 +147,7 @@ class Portfolio:
 
                     while order.status != 'filled':
                         order = self.api.get_order(order.id)
+                        time.sleep(.5)
 
                     self.positions[symbol]['shares'] += qty
                     self.update_positions()
@@ -150,16 +159,19 @@ class Portfolio:
                     # Update the buying power after the cover
                     self.buying_power -= qty * current_price
 
-    min_qty = 0.001  # define the minimum order quantity suitable for fractional trading
+    min_qty = 1  # define the minimum order quantity suitable for fractional trading
 
     def buy(self, symbol):
             self.check_rate_limit()
-            qty = self.calculate_buy_quantity(symbol, 0.1)  # 10% fraction to invest
+            qty = self.calculate_buy_quantity(symbol, 0.06)  # 10% fraction to invest
             if qty > self.min_qty:
                 if symbol not in self.positions:
                     self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
-                
-                
+
+                total_cost = qty * self.get_latest_price(symbol)
+                if total_cost > self.buying_power:
+                    print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
+                    return
 
                 order = self.api.submit_order(
                     symbol=symbol,
@@ -172,8 +184,8 @@ class Portfolio:
                 # Wait for the order to fill
                 while order.status != 'filled':
                     order = self.api.get_order(order.id)
-                    print('Waiting for order fill...')
-                    # time.sleep(.1)
+                    # print('Waiting for order fill...')
+                    time.sleep(2)
 
                 self.positions[symbol]['shares'] += qty
                 self.update_positions()
@@ -188,7 +200,7 @@ class Portfolio:
 
     def sell(self, symbol, profit_threshold=1.05):
         self.check_rate_limit()
-        qty = self.calculate_sell_quantity(symbol, 0.1)  # 10% fraction to sell
+        qty = self.calculate_sell_quantity(symbol, 0.06)  # 10% fraction to sell
 
         if qty > self.min_qty:
             if symbol in self.positions and self.positions[symbol]['shares'] > 0:
@@ -209,7 +221,7 @@ class Portfolio:
                 # Wait for the order to fill
                 while order.status != 'filled':
                     order = self.api.get_order(order.id)
-                    time.sleep(.1)
+                    time.sleep(.5)
 
                 self.positions[symbol]['shares'] -= qty
                 self.update_positions()
@@ -284,33 +296,39 @@ class Portfolio:
         return qty
 
 
-    
     def get_market_regime_data(self, symbol, period):
         end_date = datetime.now()
         start_date = end_date - timedelta(days=period)
-        
-        url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
-        headers = {"Content-Type": "application/json","Authorization": f"Token {TIINGO_API_KEY}"}
-        params = {"startDate": start_date.strftime('%Y-%m-%d'), "endDate": end_date.strftime('%Y-%m-%d')}
-        
-        response = requests.get(url, headers=headers, params=params)
-        # print(response.text)
-        data = response.json()
 
-        if not data:
-            print(f"No data returned from API for symbol: {symbol}")
+        url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Token {TIINGO_API_KEY}"
+        }
+        params = {
+            "startDate": start_date.strftime('%Y-%m-%d'),
+            "endDate": end_date.strftime('%Y-%m-%d')
+        }
+
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            print(f"API request failed with status code: {response.status_code}")
             return None
 
+        data = response.json()
+
         df = pd.DataFrame(data)
+
         df.set_index("date", inplace=True)
         return df
-    
+
     
     def get_market_regime(self, symbol, short_period=10, long_period=20, adx_period=14, atr_period=14):
         self.check_rate_limit()
         
         market_data = self.get_market_regime_data(symbol, period=max(long_period+100, adx_period+100, atr_period+100))
-
+        # market_data = market_data.fillna(0, inplace=True)
+        # print(market_data)
         market_data['symbol'] = symbol
         market_data['short_sma'] = talib.SMA(market_data['close'], timeperiod=short_period)
         market_data['long_sma'] = talib.SMA(market_data['close'], timeperiod=long_period)
@@ -319,12 +337,13 @@ class Portfolio:
 
         market_data['sma_trend'] = np.where(market_data['short_sma'] > market_data['long_sma'], 1, np.where(market_data['short_sma'] < market_data['long_sma'], -1, 0))
 
-               #fill nan w 0
-        market_data = market_data.fillna(0)
+        
 
         adx_threshold = 25
         atr_threshold = 1.5 * market_data['atr'].median()
         market_data['median_atr'] = market_data['atr'].median()
+
+  
 
         #send market regime data for each symbol to a csv
         market_data.to_csv(f'./market_regime_data/{symbol}_market_regime.csv')
