@@ -30,12 +30,10 @@ def main():
 
     # Get start and end dates
     end_date = datetime.datetime.now()
-    start_date = end_date - datetime.timedelta(days=1)
+    start_date = end_date - datetime.timedelta(days=5)
     # start_date = datetime.datetime(2023, 6, 2)
 
-    symbols = ['SPY']
-
-
+    symbols = ['NTR', 'ZG', 'CTRA']
 
 
     while True:
@@ -71,23 +69,21 @@ def main():
 
                     data = calculate_technical_indicators(data)
 
-                    # df_json = data.to_json(orient='split')
-                    # socket.emit('chart_data', df_json)
-                    #fill na with 0 for data
+
                     data = data.fillna(0)
                     data = data[data['sma_200'] != 0.0]
-                    data = data.iloc[-1]
+                    data = data.iloc[-1:]
                     #send data to csv
                     data.to_csv(f'./data/{symbol}_trading_data.csv')
                     market_regime = portfolio.get_market_regime(symbol)
                     signals = generate_trading_signals(data, portfolio, market_regime)
                     signals.to_csv(f'./signals/{symbol}_trading_signals.csv')
-
+                    time.sleep(1)
                     portfolio.execute_trade(symbol, signals['signal'].iloc[-1]) 
                 
                 print("Finished a trading cycle.")
                 print(portfolio.positions)
-                # portfolio.manage_risk()
+                
                 time.sleep(60)
                 
             else:
@@ -95,7 +91,8 @@ def main():
                 print("Market is closed.")
                 print(f"Next market open is: {clock.next_open}")
                 print(portfolio.positions)
-                time.sleep(3600)
+
+                time.sleep(60)
                 
         except Exception as e:
             print(f"An unexpected error occurred: {e}")

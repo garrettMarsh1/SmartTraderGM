@@ -4,6 +4,8 @@ import os
 import pandas as pd
 import numpy as np
 import talib
+import traceback
+
 
 # Tiingo API Key
 TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
@@ -102,102 +104,162 @@ def calculate_technical_indicators(df):
     
     return df
 
+
 def generate_trading_signals(df, portfolio, market_regime):
-
-    print(market_regime)
-    # Create a DataFrame to store the trading signals
-    signals = pd.DataFrame(index=df.index)
-    signals['symbol'] = df['symbol']
-
-    # Add additional columns for the buy price and number of shares owned
-    signals['buy_price'] = 0.0
-    signals['num_shares'] = 0
-    signals['profit'] = 0.0
-    signals['signal'] = 'hold'
-    signals['short_sell_price'] = 0.0
-    signals['num_shares_shorted'] = 0
-
-    bullish_cross = (df['macd'] > df['macd_signal']) & (df['sma_50'] > df['sma_200'])
-    oversold_condition = (df['rsi'] < 30) & (df['close'] < df['lower_bb'])
-    stoch_oversold = (df['slowk'] < 20) & (df['slowd'] < 20) & (df['close'] < df['lower_bb'])
-    bullish_ichimoku = (df['close'] > df['senkou_span_a']) & (df['senkou_span_a'] > df['senkou_span_b'])
-    buy_signals_fib = (df['close'] > df['fib_0']) & (df['close'] < df['fib_0.236'])
-    short_signals_fib = (df['close'] > df['fib_0.786']) & (df['close'] < df['fib_1'])
-
-    bearish_cross = (df['macd'] < df['macd_signal']) & (df['sma_50'] < df['sma_200'])
-    overbought_condition = (df['rsi'] > 70) & (df['close'] > df['upper_bb'])
-    stoch_overbought = (df['slowk'] > 80) & (df['slowd'] > 80) & (df['close'] > df['upper_bb'])
-    bearish_ichimoku = (df['close'] < df['senkou_span_a']) | (df['close'] < df['senkou_span_b'])
-    sell_signals_fib = (df['close'] > df['fib_0.786']) & (df['close'] < df['fib_1'])
-    cover_signals_fib = (df['close'] > df['fib_0']) & (df['close'] < df['fib_0.236'])
-
-
-
-    # Define weights
-    weights = {
-        "bullish_cross": 2,
-        "oversold_condition": 1.5,
-        "stoch_oversold": 1,
-        "bullish_ichimoku": 3,
-        "buy_signals_fib": 2,
-        "bearish_cross": 2,
-        "overbought_condition": 1.5,
-        "stoch_overbought": 1,
-        "bearish_ichimoku": 3,
-        "sell_signals_fib": 2,
-        "short_signals_fib": 2,
-        "cover_signals_fib": 2
-    }
-
-    # Modify your signal calculation
-    buy_score = weights["bullish_cross"]*bullish_cross + weights["oversold_condition"]*oversold_condition + weights["stoch_oversold"]*stoch_oversold + weights["bullish_ichimoku"]*bullish_ichimoku + weights["buy_signals_fib"]*buy_signals_fib
-
-    sell_score = weights["bearish_cross"]*bearish_cross + weights["overbought_condition"]*overbought_condition + weights["stoch_overbought"]*stoch_overbought + weights["bearish_ichimoku"]*bearish_ichimoku + weights["sell_signals_fib"]*sell_signals_fib
-
-    short_score = weights["bearish_cross"]*bearish_cross + weights["overbought_condition"]*overbought_condition + weights["stoch_overbought"]*stoch_overbought + weights["bearish_ichimoku"]*bearish_ichimoku + weights["short_signals_fib"]*short_signals_fib
-
-    cover_score = weights["bullish_cross"]*bullish_cross + weights["oversold_condition"]*oversold_condition + weights["stoch_oversold"]*stoch_oversold + weights["bullish_ichimoku"]*bullish_ichimoku + weights["cover_signals_fib"]*cover_signals_fib
-
-    # print(f"current buying power: {portfolio.buying_power}")
-
-
-    # Generate the overall signal
-    if (buy_score > sell_score).all() and (portfolio.buying_power > df['close'].mean()).all():
-
-        signals['signal'] = 'buy'
-        signals['buy_price'] = df['close'].mean()
-        signals['num_shares'] = portfolio.buying_power // signals['buy_price']
-        signals['profit'] = signals['num_shares'] * (df['close'].mean() - signals['buy_price'])
-        # print(f"Generated signal: {signals['signal'].values[0]} for symbol {signals['symbol'].values[0]}")
-
-    elif (sell_score > buy_score).all() and any(symbol in portfolio.positions for symbol in df['symbol']):
-        signals['signal'] = 'sell'
-        signals['buy_price'] = df['close'].mean()
-        signals['num_shares'] = portfolio.positions[df['symbol'].any()]
-        signals['profit'] = signals['num_shares'] * (signals['buy_price'] - df['close'].mean())
-        # print(f"Generated signal: {signals['signal'].values[0]} for symbol {signals['symbol'].values[0]}")
-    
-        # Short the stock
-    elif (short_score > buy_score).all() and portfolio.buying_power > df['close'].mean():
-        signals['signal'] = 'short'
-        signals['short_sell_price'] = df['close'].mean()
-        signals['num_shares_shorted'] = portfolio.buying_power // signals['short_sell_price']
-        signals['profit'] = signals['num_shares_shorted'] * (signals['short_sell_price'] - df['close'].mean())
-    # Cover the short
-    elif (cover_score > short_score).all() and any(symbol in portfolio.get_short_positions() for symbol in df['symbol']):
-        signals['signal'] = 'cover'
-        signals['short_sell_price'] = df['close'].mean()
-        signals['num_shares_shorted'] = portfolio.get_short_positions()[df['symbol'].any()]
-        signals['profit'] = signals['num_shares_shorted'] * (df['close'].mean() - signals['short_sell_price'])
-
-    else:
-        signals['signal'] = 'hold'
-        print(f"Generated signal: {signals['signal'].values[0]} for symbol {signals['symbol'].values[0]}")
+    try:
+        print(market_regime)
         
-    #fill NaN with 0
-    signals.fillna(0, inplace=True)
+        signals = pd.DataFrame(index=df.index)
+        signals['symbol'] = df['symbol']
+        signals['buy_price'] = 0.0
+        signals['num_shares'] = 0
+        signals['profit'] = 0.0
+        signals['signal'] = 'hold'
+        signals['short_sell_price'] = 0.0
+        signals['num_shares_shorted'] = 0
 
-    return signals
+
+
+        # for idx, row in df.iterrows():
+
+
+    # Choose action with highest score and generate signal accordingly
+        
+
+        # Choose action with highest score and generate signal accordingly
+        for idx, row in df.iterrows():
+
+            conditions = {
+                "bullish_cross": (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']),
+                "oversold_condition": (row['rsi'] < 30) & (row['close'] < row['lower_bb']) & (row['macd'] < row['macd_signal']),
+                "stoch_oversold": (row['slowk'] < 20) & (row['slowd'] < 20) & (row['close'] < row['lower_bb']) & (row['rsi'] >= 30),
+                "bullish_ichimoku": (row['close'] > row['senkou_span_a']) & (row['senkou_span_a'] > row['senkou_span_b']) & (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']),
+                "bearish_cross": (row['macd'] < row['macd_signal']) & (row['sma_50'] < row['sma_200']) & (row['rsi'] > 70),
+                "overbought_condition": (row['rsi'] > 70) & (row['close'] > row['upper_bb']) & (row['macd'] < row['macd_signal']),
+                "stoch_overbought": (row['slowk'] > 80) & (row['slowd'] > 80) & (row['close'] > row['upper_bb']) & (row['rsi'] <= 70),
+                "bearish_ichimoku": (row['close'] < row['senkou_span_a']) | (row['close'] < row['senkou_span_b']) & (row['macd'] < row['macd_signal']) & (row['sma_50'] < row['sma_200']),
+                "cover_signals_fib": (row['close'] > row['fib_0']) & (row['close'] < row['fib_0.236']) & (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']),
+                "hold_condition": (row['close'] > 0.95*row['sma_50']) & (row['close'] < 1.05*row['sma_50']),
+                "cover_signals_fib": (row['close'] > row['fib_0']) & (row['close'] < row['fib_0.236']) & (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']) & (portfolio.get_short_positions().get(row['symbol'], {}).get('shares', 0) > 0),
+                "short_signals_fib": (row['close'] > row['fib_0.786']) & (row['close'] < row['fib_1']) & (row['macd'] < row['macd_signal']) & (row['sma_50'] < row['sma_200']) & (portfolio.get_short_positions().get(row['symbol'], {}).get('shares', 0) < 0),
+                "buy_signals_fib": (row['close'] > row['fib_0']) & (row['close'] < row['fib_0.236']) & (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']) & (portfolio.positions.get(row['symbol'], {}).get('shares', 0) == 0),
+                "sell_signals_fib": (row['close'] > row['fib_0.618']) & (row['close'] < row['fib_0.786']) & (row['macd'] < row['macd_signal']) & (row['sma_50'] < row['sma_200']) & (portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0),
+
+                }
+            # Define weights for each market regime
+            weights_by_regime = {
+                'bullish': {
+                    "bullish_cross": 2.5,
+                    "oversold_condition": 2.0, 
+                    "stoch_oversold": 1.5,  
+                    "bullish_ichimoku": 3.5,  
+                    "buy_signals_fib": 2.5,  
+                },
+                'bearish': {
+                    "bearish_cross": 2.6,  
+                    "overbought_condition": 2.1,
+                    "stoch_overbought": 1.4,  
+                    "bearish_ichimoku": 3.7,  
+                    "sell_signals_fib": 2.4,  
+                },
+                'low_volatility': {
+                    "hold_condition": 3.5,
+                },
+                'high_volatility': {
+                    "short_signals_fib": 2.8,  
+                    "cover_signals_fib": 2.8,  
+                }
+            }
+
+            # Get weights for current market regime
+            weights = weights_by_regime.get(market_regime, {})
+
+        
+
+
+            # Compute scores for each action
+
+            conditions_for_actions = {
+                "buy": ["bullish_cross", "oversold_condition", "stoch_oversold", "bullish_ichimoku", "buy_signals_fib"],
+                "sell": ["bearish_cross", "overbought_condition", "stoch_overbought", "bearish_ichimoku", "sell_signals_fib"],
+                "short": ["bearish_cross", "overbought_condition", "stoch_overbought", "bearish_ichimoku", "short_signals_fib"],
+                "cover": ["bullish_cross", "oversold_condition", "stoch_oversold", "bullish_ichimoku", "cover_signals_fib"],
+                "hold": ["hold_condition"]
+            }
+
+            # Calculate scores for this row
+            scores = {action: sum(weights.get(condition, 0) * conditions[condition] for condition in conditions_for_action) for action, conditions_for_action in conditions_for_actions.items()}
+
+    
+
+
+
+            #if all scores are zero set to hold
+            if all(value == 0 for value in scores.values()):
+                scores['hold'] = 3.0
+
+
+            # # Choose the action for this row
+            
+            # # Now modify scores based on portfolio conditions for this row
+            if portfolio.positions.get(row['symbol'], {}).get('shares', 0) <= 0:
+                scores['sell'] = 0.0
+
+            if portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0:
+                scores['short'] = 0.0
+                
+            if portfolio.positions.get(row['symbol'], {}).get('shares', 0) >= 0:
+                scores['cover'] = 0.0
+
+            max_score_action = max(scores, key=lambda action: scores[action])
+            # print(portfolio.positions.get(row['symbol'], {}).get('shares', 0))
+            print(scores)
+            if row['symbol'] in portfolio.positions:
+                print(portfolio.positions[row['symbol']]['shares'])
+
+
+            if max_score_action == "buy" and portfolio.buying_power > df.at[idx, 'close']:
+                
+                signals.at[idx, 'signal'] = 'buy'
+                signals.at[idx, 'buy_price'] = df.at[idx, 'close']
+                signals.at[idx, 'num_shares'] = portfolio.buying_power // signals.at[idx, 'buy_price']
+                signals.at[idx, 'profit'] = signals.at[idx, 'num_shares'] * (df.at[idx, 'close'] - signals.at[idx, 'buy_price'])
+            
+            elif max_score_action == "short":
+
+                signals.at[idx, 'signal'] = 'short'
+
+                signals.at[idx, 'short_sell_price'] = df.at[idx, 'close']
+
+                signals.at[idx, 'num_shares_shorted'] = portfolio.buying_power // signals.at[idx, 'short_sell_price']
+
+                signals.at[idx, 'profit'] = signals.at[idx, 'num_shares_shorted'] * (signals.at[idx, 'short_sell_price'] - df.at[idx, 'close'])
+
+
+            elif max_score_action == "sell" and portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0:
+                signals.at[idx, 'signal'] = 'sell'
+                signals.at[idx, 'buy_price'] = df.at[idx, 'close']
+                signals.at[idx, 'num_shares'] = portfolio.positions.get(row['symbol'], 0)
+                signals.at[idx, 'profit'] = signals.at[idx, 'num_shares'] * (signals.at[idx, 'buy_price'] - df.at[idx, 'close'])
+
+            elif max_score_action == "cover" and row['symbol'] in portfolio.get_short_positions():
+                signals.at[idx, 'signal'] = 'cover'
+                signals.at[idx, 'short_sell_price'] = df.at[idx, 'close']
+                signals.at[idx, 'num_shares_shorted'] = portfolio.get_short_positions().get(row['symbol'], 0)
+                signals.at[idx, 'profit'] = signals.at[idx, 'num_shares_shorted'] * (df.at[idx, 'close'] - signals.at[idx, 'short_sell_price'])
+
+            elif max_score_action == "hold":
+                print("holding")
+                signals.at[idx, 'signal'] = 'hold'
+
+            print(f"For date {idx}, the chosen action is for {row['symbol']}: {max_score_action}")
+
+        # Fill NaN with 0
+        signals.fillna(0, inplace=True)
+
+        return signals
+    except Exception as e:
+        traceback.print_exc()
 
 
 

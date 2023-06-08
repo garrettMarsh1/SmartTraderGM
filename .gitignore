@@ -1,5 +1,6 @@
 data/
 market_regime_data/
 signals/
-pycache/
+__pycache__/
 node_modules/
+models/
