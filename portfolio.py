@@ -1,18 +1,18 @@
 import datetime
 from datetime import timedelta, datetime
+import math
 import time
 import alpaca_trade_api as tradeapi
 from matplotlib import pyplot as plt
 import numpy as np
 import requests
 from sklearn.preprocessing import MinMaxScaler
-from trading_signals import generate_trading_signals
+from trading_signals import TIINGO_API_KEY, generate_trading_signals
 import talib
 import os
 
 
 import pandas as pd
-TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
 
 
 class Portfolio:
@@ -28,6 +28,7 @@ class Portfolio:
 
         # Initialize portfolio with existing positions
         self.update_positions()
+        
 
     def check_rate_limit(self):
         # Add 1 to the number of requests made
@@ -53,6 +54,8 @@ class Portfolio:
 
             # get the latest trade prices for all symbols at once and store it in a dict
             latest_prices = {pos.symbol: float(self.api.get_latest_trade(pos.symbol).price) for pos in positions}
+            #get current profit/loss percentage from
+
 
             for position in positions:
                 symbol = position.symbol
@@ -60,7 +63,7 @@ class Portfolio:
                 buy_price = float(position.avg_entry_price)
                 #get total P/L and multiply by the number of shares
                 pl = float(position.unrealized_pl)
-                #get current price
+
                 current_price = latest_prices[symbol]
                 self.positions[symbol] = {'shares': shares, 'buy_price': buy_price, 'current_price': current_price, 'pl': pl}
 
@@ -78,37 +81,150 @@ class Portfolio:
 
     def execute_trade(self, symbol, signal):
         self.check_rate_limit()
+        print(f'Symbol: {symbol}, Signal: {signal}')
 
         if signal == 'buy':
             self.buy(symbol)
             print(f"Executing buy for {symbol}.")
+            time.sleep(1.5)
         elif signal == 'sell':
-            print(f"Executing sell for {symbol}.")
-            self.sell(symbol)
+            #no shares to sell check
+            if symbol not in self.positions:
+                print(f"No shares of {symbol} to sell. Skipping trade.")
+                return
+            else:
+                print(f"Executing sell for {symbol}.")
+                self.sell(symbol)
+                time.sleep(1.5)
+        elif signal == 'short':
+            #buying power check before short
+            print(f"Executing short for {symbol}.")
+            print(self.buying_power)
+            if self.buying_power < 0:
+                print(f"Not enough buying power to short {symbol}. Skipping trade.")
+                return
+            else:
+                print(f"Executing short for {symbol}.")
+                self.short(symbol)
+                time.sleep(1.5)
 
-    min_qty = 0.001  # define the minimum order quantity suitable for fractional trading
+        elif signal == 'cover':
+            print(f"Executing cover for {symbol}.")
+            self.cover(symbol)
+            time.sleep(1.5)
+            
+    def short(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
+        self.check_rate_limit()
+        qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))  # 10% fraction to invest
+        print(qty)
+        if qty > self.min_qty:
+            total_cost = qty * self.get_latest_price(symbol)
+            if total_cost > self.buying_power:
+                print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
+                return            
 
-    def buy(self, symbol):
-            self.check_rate_limit()
-            qty = self.calculate_buy_quantity(symbol, 0.1)  # 10% fraction to invest
-            if qty > self.min_qty:
-                if symbol not in self.positions:
-                    self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
-                
+            # Calculate the stop loss and take profit prices
+            current_price = self.get_latest_price(symbol)
+            stop_loss_price = round(current_price * (1 + stop_loss_percentage), 2)
+            take_profit_price = round(current_price * (1 - take_profit_percentage), 2)
+
+
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side='sell',
+                type='market',
+                time_in_force='gtc',
+                order_class='bracket',
+                take_profit={'limit_price': take_profit_price},
+                stop_loss={'stop_price': stop_loss_price}
+            )
+
+            while order.status != 'filled':
+                order = self.api.get_order(order.id)
+
+            print(f"Shorted {qty} shares of {symbol} at {order.filled_avg_price}.")
+            self.update_positions()
+
+            # Update the buying power after the short
+            self.buying_power -= qty * float(order.filled_avg_price)
+
+
+
+
+
+    def cover(self, symbol):
+        self.check_rate_limit()
+        qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))  
+
+        if qty > self.min_qty:
+            if symbol in self.positions and self.positions[symbol]['shares'] < 0:
+                current_price = float(self.api.get_latest_trade(symbol).price)
+
+                current_price = self.get_latest_price(symbol)
+
                 
 
                 order = self.api.submit_order(
                     symbol=symbol,
-                    qty=round(qty, 6) if qty >= 1 else qty,
+                    qty=qty,
                     side='buy',
                     type='market',
                     time_in_force='day'
+                )
+                while order.status != 'filled':
+                    order = self.api.get_order(order.id)
+                    time.sleep(.5)
+
+                self.positions[symbol]['shares'] += qty
+                self.update_positions()
+                
+
+                if self.positions[symbol]['shares'] == 0:
+                    self.positions[symbol]['buy_price'] = 0.0
+
+                # Update the buying power after the cover
+                self.buying_power += qty * float(current_price)
+
+
+
+    min_qty = 1  # define the minimum order quantity suitable for fractional trading
+
+    def buy(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
+            self.check_rate_limit()
+            qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))
+            print(f'Buying {qty} share(s) of {symbol}')  
+            if qty > self.min_qty:
+                if symbol not in self.positions:
+                    self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
+
+                total_cost = qty * self.get_latest_price(symbol)
+                if total_cost > self.buying_power:
+                    print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
+                    return
+                
+                
+                current_price = self.get_latest_price(symbol)
+                stop_loss_price = round(current_price * (1 - stop_loss_percentage), 2)
+                take_profit_price = round(current_price * (1 + take_profit_percentage), 2)
+
+
+                order = self.api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side='buy',
+                    type='market',
+                    time_in_force='gtc',
+                    order_class='bracket',
+                    take_profit={'limit_price': take_profit_price},
+                    stop_loss={'stop_price': stop_loss_price}
                 )
 
                 # Wait for the order to fill
                 while order.status != 'filled':
                     order = self.api.get_order(order.id)
-                    # time.sleep(.1)
+                    # print('Waiting for order fill...')
+                    time.sleep(2)
 
                 self.positions[symbol]['shares'] += qty
                 self.update_positions()
@@ -118,43 +234,54 @@ class Portfolio:
 
 
                 # Update the buying power after the purchase
-                self.buying_power -= qty * self.positions[symbol]['buy_price']
+                self.buying_power -= qty * float(self.positions[symbol]['buy_price'])
 
 
-    def sell(self, symbol, profit_threshold=1.05):
+
+    def sell(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
         self.check_rate_limit()
-        qty = self.calculate_sell_quantity(symbol, 0.1)  # 10% fraction to sell
-
+        qty = math.floor(self.calculate_sell_quantity(symbol, 0.06))  # 10% fraction to sell
+        print(f"Trying to sell {qty} shares of {symbol}.")
         if qty > self.min_qty:
             if symbol in self.positions and self.positions[symbol]['shares'] > 0:
                 current_price = float(self.api.get_latest_trade(symbol).price)
                 profit_ratio = current_price / self.positions[symbol]['buy_price']
-
-                if profit_ratio >= profit_threshold:
                 
+                current_price = self.get_latest_price(symbol)
+                stop_loss_price = round(current_price * (1 + stop_loss_percentage), 2)
+                take_profit_price = round(current_price * (1 - take_profit_percentage), 2)
+         
+                order = self.api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side='buy',
+                    type='market',
+                    time_in_force='gtc',
+                    order_class='bracket',
+                    take_profit={'limit_price': take_profit_price},
+                    stop_loss={'stop_price': stop_loss_price}
+                )
 
-                        order = self.api.submit_order(
-                        symbol=symbol,
-                        qty=round(qty, 6) if qty >= 1 else qty,
-                        side='sell',
-                        type='market',
-                        time_in_force='day'
-                    )
+            # Wait for the order to fill
+            while order.status != 'filled':
+                order = self.api.get_order(order.id)
+                time.sleep(.5)
 
-                # Wait for the order to fill
-                while order.status != 'filled':
-                    order = self.api.get_order(order.id)
-                    time.sleep(.1)
+            self.positions[symbol]['shares'] -= qty
+            self.update_positions()
+            print(f"Sold {qty} shares of {symbol} at {current_price} for a profit of {profit_ratio}.")
 
-                self.positions[symbol]['shares'] -= qty
-                self.update_positions()
-                print(f"Sold {qty} shares of {symbol} at {current_price} for a profit of {profit_ratio}.")
+            if self.positions[symbol]['shares'] == 0:
+                self.positions[symbol]['buy_price'] = 0.0
 
-                if self.positions[symbol]['shares'] == 0:
-                    self.positions[symbol]['buy_price'] = 0.0
+            # Update the buying power after the sale
+            self.buying_power += qty * float(current_price)
 
-                # Update the buying power after the sale
-                self.buying_power += qty * current_price
+
+
+    def get_buying_power(self):
+        self.check_rate_limit()
+        return float(self.api.get_account().buying_power)
 
 
     def get_latest_price(self, symbol):
@@ -162,6 +289,7 @@ class Portfolio:
         return float(self.api.get_latest_trade(symbol).price)
 
     def calculate_buy_quantity(self, symbol, fraction):
+        self.check_rate_limit()
         """
         Calculate the quantity to buy for a symbol.
 
@@ -188,6 +316,7 @@ class Portfolio:
 
     
     def calculate_sell_quantity(self, symbol, fraction):
+        self.check_rate_limit()
         """
         Calculate the quantity to sell for a symbol.
 
@@ -212,71 +341,90 @@ class Portfolio:
         return qty
 
 
-    
     def get_market_regime_data(self, symbol, period):
         end_date = datetime.now()
         start_date = end_date - timedelta(days=period)
-        
-        url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
-        headers = {"Content-Type": "application/json","Authorization": f"Token {TIINGO_API_KEY}"}
-        params = {"startDate": start_date.strftime('%Y-%m-%d'), "endDate": end_date.strftime('%Y-%m-%d')}
-        
-        response = requests.get(url, headers=headers, params=params)
-        data = response.json()
 
-        if not data:
-            print(f"No data returned from API for symbol: {symbol}")
+        url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Token {TIINGO_API_KEY}"
+        }
+        params = {
+            "startDate": start_date.strftime('%Y-%m-%d'),
+            "endDate": end_date.strftime('%Y-%m-%d')
+        }
+
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            print(f"API request failed with status code: {response.status_code}")
             return None
 
+        data = response.json()
+
         df = pd.DataFrame(data)
+
         df.set_index("date", inplace=True)
         return df
-    
+
     
     def get_market_regime(self, symbol, short_period=10, long_period=20, adx_period=14, atr_period=14):
         self.check_rate_limit()
-        
-        market_data = self.get_market_regime_data(symbol, period=max(long_period+100, adx_period+100, atr_period+100))
-
+            
+        required_period = max(long_period+1000, adx_period+1000, atr_period+1000)
+        market_data = self.get_market_regime_data(symbol, period=required_period)
         market_data['symbol'] = symbol
-        market_data['short_sma'] = talib.SMA(market_data['close'], timeperiod=short_period)
-        market_data['long_sma'] = talib.SMA(market_data['close'], timeperiod=long_period)
-        market_data['adx'] = talib.ADX(market_data['high'], market_data['low'], market_data['close'], timeperiod=adx_period)
-        market_data['atr'] = talib.ATR(market_data['high'], market_data['low'], market_data['close'], timeperiod=atr_period)
 
-        market_data['sma_trend'] = np.where(market_data['short_sma'] > market_data['long_sma'], 1, np.where(market_data['short_sma'] < market_data['long_sma'], -1, 0))
+        close = market_data['close']
+        high = market_data['high']
+        low = market_data['low']
 
-               #fill nan w 0
+        short_sma = talib.SMA(close, timeperiod=short_period)
+        long_sma = talib.SMA(close, timeperiod=long_period)
+        adx = talib.ADX(high, low, close, timeperiod=adx_period)
+        atr = talib.ATR(high, low, close, timeperiod=atr_period)
+
+        sma_trend = (short_sma > long_sma).astype(int) - (short_sma < long_sma).astype(int)
+
+        market_data = market_data.assign(
+            short_sma=short_sma,
+            long_sma=long_sma,
+            adx=adx,
+            atr=atr,
+            sma_trend=sma_trend,
+        )
+
+        atr_threshold = 1.5 * atr.median()
+        market_data['median_atr'] = atr.median()
+
+        market_data.to_csv(f'./market_regime_data/{symbol}_market_regime.csv')
+        #fill with 0s
         market_data = market_data.fillna(0)
 
-        adx_threshold = 25
-        atr_threshold = 1.5 * market_data['atr'].median()
-        market_data['median_atr'] = market_data['atr'].median()
+        last_sma_trend = sma_trend.iat[-1]
+        last_adx = adx.iat[-1]
+        last_atr = atr.iat[-1]
 
-        #send market regime data for each symbol to a csv
-        market_data.to_csv(f'./market_regime_data/{symbol}_market_regime.csv')
- 
-
-        if market_data['sma_trend'].iloc[-1] > 0 and market_data['adx'].iloc[-1] > adx_threshold:
+        if last_sma_trend > 0 and last_adx > 25:
             return 'bullish'
-        elif market_data['sma_trend'].iloc[-1] < 0 and market_data['adx'].iloc[-1] > adx_threshold:
+        elif last_sma_trend < 0 and last_adx > 25:
             return 'bearish'
-        elif market_data['atr'].iloc[-1] < atr_threshold:
+        elif last_atr < atr_threshold:
             return 'low_volatility'
         else:
             return 'high_volatility'
 
 
 
-    def adjust_parameters(self, symbol, volatility):
-        volatility_score = (volatility['ATR'] + volatility['STDDEV']) / 2
-        scaler = MinMaxScaler(feature_range=(14, 28))
-        volatility_array = np.array(volatility_score).reshape(-1, 1)
-        rsi_period = int(scaler.fit_transform(volatility_array)[0][0])
+    def get_short_positions(self):
+        self.check_rate_limit()
+        short_positions = {}
+        for symbol, position_data in self.positions.items():
+            if position_data['shares'] < 0:
+                short_positions[symbol] = position_data
+        return short_positions
 
-        return {'rsi_period': rsi_period}
     
-
     def optimize_portfolio(self):
         # Get the current portfolio
         self.check_rate_limit()
@@ -288,8 +436,19 @@ class Portfolio:
         # Adjust the portfolio to the target weights
         for position in current_portfolio:
             symbol = position.symbol
-            target_quantity = equal_weight * self.api.get_account().cash
-            self.api.submit_order(symbol, target_quantity, 'buy', 'limit', 'day')
+            # Get the current price of the stock
+            current_price = self.api.get_latest_trade(symbol).price
+            # Calculate the target quantity
+            target_quantity = int((equal_weight * float(self.api.get_account().buying_power)) / current_price)
+            print(target_quantity)
+            # Check if target_quantity is greater than 0 before submitting the order
+            if target_quantity > 0:
+                # Submit the order with a limit price (here, the current price is used as the limit price)
+                self.api.submit_order(symbol, target_quantity, 'buy', 'limit', 'day', limit_price=current_price)
+            else:
+                print(f"Insufficient buying power to purchase {symbol}, or target quantity is 0.")
+    
+
 
 
     def manage_risk(self):
@@ -310,10 +469,3 @@ class Portfolio:
                     type='market',
                     time_in_force='day'
                 )
-
-
-
-
-
-
-

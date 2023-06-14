@@ -1,4 +1,10 @@
 data/
 market_regime_data/
 signals/
-pycache/
+__pycache__/
+node_modules/
+models/
+data-training/
+market_regime_data/
+signals/
+plots/
