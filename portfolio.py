@@ -1,18 +1,18 @@
 import datetime
 from datetime import timedelta, datetime
+import math
 import time
 import alpaca_trade_api as tradeapi
 from matplotlib import pyplot as plt
 import numpy as np
 import requests
 from sklearn.preprocessing import MinMaxScaler
-from trading_signals import generate_trading_signals
+from trading_signals import TIINGO_API_KEY, generate_trading_signals
 import talib
 import os
 
 
 import pandas as pd
-TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
 
 
 class Portfolio:
@@ -63,10 +63,9 @@ class Portfolio:
                 buy_price = float(position.avg_entry_price)
                 #get total P/L and multiply by the number of shares
                 pl = float(position.unrealized_pl)
-                percentage_profit = (abs(pl) / (abs(shares) * abs(buy_price))) * 100  # calculate profit percentage using absolute values
 
                 current_price = latest_prices[symbol]
-                self.positions[symbol] = {'shares': shares, 'buy_price': buy_price, 'current_price': current_price, 'pl': pl, 'percentage_profit': percentage_profit}
+                self.positions[symbol] = {'shares': shares, 'buy_price': buy_price, 'current_price': current_price, 'pl': pl}
 
 
     def add_position(self, symbol, shares, buy_price):
@@ -83,11 +82,11 @@ class Portfolio:
     def execute_trade(self, symbol, signal):
         self.check_rate_limit()
         print(f'Symbol: {symbol}, Signal: {signal}')
-        # print(f"Executing trade for {symbol}.")
 
         if signal == 'buy':
             self.buy(symbol)
             print(f"Executing buy for {symbol}.")
+            time.sleep(1.5)
         elif signal == 'sell':
             #no shares to sell check
             if symbol not in self.positions:
@@ -96,6 +95,7 @@ class Portfolio:
             else:
                 print(f"Executing sell for {symbol}.")
                 self.sell(symbol)
+                time.sleep(1.5)
         elif signal == 'short':
             #buying power check before short
             print(f"Executing short for {symbol}.")
@@ -106,83 +106,94 @@ class Portfolio:
             else:
                 print(f"Executing short for {symbol}.")
                 self.short(symbol)
+                time.sleep(1.5)
 
         elif signal == 'cover':
             print(f"Executing cover for {symbol}.")
             self.cover(symbol)
+            time.sleep(1.5)
             
-    def short(self, symbol):
+    def short(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
         self.check_rate_limit()
-        qty = round(self.calculate_buy_quantity(symbol, 0.06))  # 10% fraction to invest
+        qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))  # 10% fraction to invest
         print(qty)
         if qty > self.min_qty:
-            if symbol not in self.positions:
-                self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
-
             total_cost = qty * self.get_latest_price(symbol)
             if total_cost > self.buying_power:
                 print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
                 return            
-            
+
+            # Calculate the stop loss and take profit prices
+            current_price = self.get_latest_price(symbol)
+            stop_loss_price = round(current_price * (1 + stop_loss_percentage), 2)
+            take_profit_price = round(current_price * (1 - take_profit_percentage), 2)
+
+
             order = self.api.submit_order(
                 symbol=symbol,
-                qty=round(qty, 6) if qty >= 1 else qty,
+                qty=qty,
                 side='sell',
                 type='market',
-                time_in_force='day'
+                time_in_force='gtc',
+                order_class='bracket',
+                take_profit={'limit_price': take_profit_price},
+                stop_loss={'stop_price': stop_loss_price}
             )
 
             while order.status != 'filled':
                 order = self.api.get_order(order.id)
 
-            self.positions[symbol]['shares'] -= qty
-            self.update_positions()
             print(f"Shorted {qty} shares of {symbol} at {order.filled_avg_price}.")
-            self.positions[symbol]['buy_price'] = float(order.filled_avg_price)
+            self.update_positions()
 
             # Update the buying power after the short
-            # Update the buying power after the short
-            self.buying_power -= qty * self.positions[symbol]['buy_price']
+            self.buying_power -= qty * float(order.filled_avg_price)
 
 
-    def cover(self, symbol, profit_threshold=4.0):
+
+
+
+    def cover(self, symbol):
         self.check_rate_limit()
-        qty = round(self.calculate_sell_quantity(symbol, 0.06))  # 10% fraction to sell
+        qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))  
 
         if qty > self.min_qty:
             if symbol in self.positions and self.positions[symbol]['shares'] < 0:
                 current_price = float(self.api.get_latest_trade(symbol).price)
-                percentage_profit = self.positions[symbol]['percentage_profit']
+
+                current_price = self.get_latest_price(symbol)
+
                 
-                if percentage_profit >= profit_threshold:
-                    order = self.api.submit_order(
-                        symbol=symbol,
-                        qty=round(qty, 6) if qty >= 1 else qty,
-                        side='buy',
-                        type='market',
-                        time_in_force='day'
-                    )
 
-                    while order.status != 'filled':
-                        order = self.api.get_order(order.id)
-                        time.sleep(.5)
+                order = self.api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side='buy',
+                    type='market',
+                    time_in_force='day'
+                )
+                while order.status != 'filled':
+                    order = self.api.get_order(order.id)
+                    time.sleep(.5)
 
-                    self.positions[symbol]['shares'] += qty
-                    self.update_positions()
-                    print(f"Covered {qty} shares of {symbol} at {current_price} with a profit percentage of {percentage_profit}%.")
+                self.positions[symbol]['shares'] += qty
+                self.update_positions()
+                
 
-                    if self.positions[symbol]['shares'] == 0:
-                        self.positions[symbol]['buy_price'] = 0.0
+                if self.positions[symbol]['shares'] == 0:
+                    self.positions[symbol]['buy_price'] = 0.0
 
-                    # Update the buying power after the cover
-                    self.buying_power += qty * current_price
+                # Update the buying power after the cover
+                self.buying_power += qty * float(current_price)
+
 
 
     min_qty = 1  # define the minimum order quantity suitable for fractional trading
 
-    def buy(self, symbol):
+    def buy(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
             self.check_rate_limit()
-            qty = self.calculate_buy_quantity(symbol, 0.06)  # 10% fraction to invest
+            qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))
+            print(f'Buying {qty} share(s) of {symbol}')  
             if qty > self.min_qty:
                 if symbol not in self.positions:
                     self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
@@ -191,13 +202,22 @@ class Portfolio:
                 if total_cost > self.buying_power:
                     print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
                     return
+                
+                
+                current_price = self.get_latest_price(symbol)
+                stop_loss_price = round(current_price * (1 - stop_loss_percentage), 2)
+                take_profit_price = round(current_price * (1 + take_profit_percentage), 2)
+
 
                 order = self.api.submit_order(
                     symbol=symbol,
-                    qty=round(qty, 6) if qty >= 1 else qty,
+                    qty=qty,
                     side='buy',
                     type='market',
-                    time_in_force='day'
+                    time_in_force='gtc',
+                    order_class='bracket',
+                    take_profit={'limit_price': take_profit_price},
+                    stop_loss={'stop_price': stop_loss_price}
                 )
 
                 # Wait for the order to fill
@@ -214,43 +234,49 @@ class Portfolio:
 
 
                 # Update the buying power after the purchase
-                self.buying_power -= qty * self.positions[symbol]['buy_price']
+                self.buying_power -= qty * float(self.positions[symbol]['buy_price'])
 
 
-    def sell(self, symbol, profit_threshold=1.05):
+
+    def sell(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
         self.check_rate_limit()
-        qty = self.calculate_sell_quantity(symbol, 0.06)  # 10% fraction to sell
-
+        qty = math.floor(self.calculate_sell_quantity(symbol, 0.06))  # 10% fraction to sell
+        print(f"Trying to sell {qty} shares of {symbol}.")
         if qty > self.min_qty:
             if symbol in self.positions and self.positions[symbol]['shares'] > 0:
                 current_price = float(self.api.get_latest_trade(symbol).price)
                 profit_ratio = current_price / self.positions[symbol]['buy_price']
-
-                if profit_ratio >= profit_threshold:
                 
+                current_price = self.get_latest_price(symbol)
+                stop_loss_price = round(current_price * (1 + stop_loss_percentage), 2)
+                take_profit_price = round(current_price * (1 - take_profit_percentage), 2)
+         
+                order = self.api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side='buy',
+                    type='market',
+                    time_in_force='gtc',
+                    order_class='bracket',
+                    take_profit={'limit_price': take_profit_price},
+                    stop_loss={'stop_price': stop_loss_price}
+                )
 
-                        order = self.api.submit_order(
-                        symbol=symbol,
-                        qty=round(qty, 6) if qty >= 1 else qty,
-                        side='sell',
-                        type='market',
-                        time_in_force='day'
-                    )
+            # Wait for the order to fill
+            while order.status != 'filled':
+                order = self.api.get_order(order.id)
+                time.sleep(.5)
 
-                # Wait for the order to fill
-                while order.status != 'filled':
-                    order = self.api.get_order(order.id)
-                    time.sleep(.5)
+            self.positions[symbol]['shares'] -= qty
+            self.update_positions()
+            print(f"Sold {qty} shares of {symbol} at {current_price} for a profit of {profit_ratio}.")
 
-                self.positions[symbol]['shares'] -= qty
-                self.update_positions()
-                print(f"Sold {qty} shares of {symbol} at {current_price} for a profit of {profit_ratio}.")
+            if self.positions[symbol]['shares'] == 0:
+                self.positions[symbol]['buy_price'] = 0.0
 
-                if self.positions[symbol]['shares'] == 0:
-                    self.positions[symbol]['buy_price'] = 0.0
+            # Update the buying power after the sale
+            self.buying_power += qty * float(current_price)
 
-                # Update the buying power after the sale
-                self.buying_power += qty * current_price
 
 
     def get_buying_power(self):

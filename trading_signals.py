@@ -1,10 +1,31 @@
 # Required Libraries
+import time
 import requests
 import os
 import pandas as pd
 import numpy as np
 import talib
 import traceback
+import asyncio
+
+time_last_request = time.time()
+requests_made = 0
+def check_rate_limit_tiingo():
+    # Add 1 to the number of requests made
+    global requests_made
+    global time_last_request
+    requests_made += 1
+    print(f"Tiingo Requests made: {requests_made}")
+
+    # If 60 seconds have passed since the last request reset the counter
+    if time.time() - time_last_request >= 60:
+        requests_made = 0
+        time_last_request = time.time()
+    elif requests_made >= 200:  # If the limit is hit, sleep for 60 seconds
+        print("Rate limit hit! Waiting 60 seconds...")
+        time.sleep(60)
+        requests_made = 0
+        time_last_request = time.time()
 
 
 # Tiingo API Key
@@ -12,7 +33,7 @@ TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
 
 def get_tiingo_data(symbol, start_date, end_date):
     url = f"https://api.tiingo.com/iex/{symbol}/prices"
-    headers = {"Content-Type": "application/json","Authorization": f"Token {TIINGO_API_KEY}"}
+    headers = {"Content-Type": "application/json","Authorization": f"Token {'6ceb439fce674f4b793a7ff074b9ca443d1c79bf'}"}
     params = {"startDate": start_date, "endDate": end_date, "resampleFreq": "1min"}
     response = requests.get(url, headers=headers, params=params)
     data = response.json()
@@ -25,6 +46,7 @@ def get_tiingo_data(symbol, start_date, end_date):
     df['symbol'] = symbol
     df.set_index("date", inplace=True)
     return df
+
 
 
 
@@ -104,6 +126,69 @@ def calculate_technical_indicators(df):
     
     return df
 
+def generate_basic_conditions(row, portfolio):
+    return {
+        "macd_cross_up": row['macd'] > row['macd_signal'],
+        "macd_cross_down": row['macd'] < row['macd_signal'],
+        "sma_50_above_200": row['sma_50'] > row['sma_200'],
+        "sma_50_below_200": row['sma_50'] < row['sma_200'],
+        "rsi_less_than_30": row['rsi'] < 30,
+        "rsi_less_than_70": row['rsi'] < 70,
+        "rsi_greater_than_70": row['rsi'] > 70,
+        "close_less_than_lower_bb": row['close'] < row['lower_bb'],
+        "close_greater_than_upper_bb": row['close'] > row['upper_bb'],
+        "slowk_less_than_20": row['slowk'] < 20,
+        "slowd_less_than_20": row['slowd'] < 20,
+        "slowk_greater_than_80": row['slowk'] > 80,
+        "slowd_greater_than_80": row['slowd'] > 80,
+        "close_greater_than_senkou_span_a": row['close'] > row['senkou_span_a'],
+        "senkou_span_a_greater_than_b": row['senkou_span_a'] > row['senkou_span_b'],
+        "close_less_than_senkou_span_a": row['close'] < row['senkou_span_a'],
+        "close_less_than_senkou_span_b": row['close'] < row['senkou_span_b'],
+        "close_in_sma_50_band": (row['close'] > 0.95*row['sma_50']) & (row['close'] < 1.05*row['sma_50']),
+        "close_in_fib_0_band": (row['close'] > row['fib_0']) & (row['close'] < row['fib_0.236']),
+        "close_in_fib_0.5_band": (row['close'] > row['fib_0.5']) & (row['close'] < row['fib_0.618']),
+        "close_in_fib_1_band": (row['close'] > row['fib_0.786']) & (row['close'] < row['fib_1']),
+        "close_in_fib_2_band": (row['close'] > row['fib_0.618']) & (row['close'] < row['fib_0.786']),
+        "portfolio_has_position": portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0,
+        "portfolio_has_short_position": portfolio.get_short_positions().get(row['symbol'], {}).get('shares', 0) < 0,
+        "portfolio_no_position": portfolio.positions.get(row['symbol'], {}).get('shares', 0) == 0,
+    }
+
+def generate_composite_conditions(basic_conditions):
+    return {
+        "bullish_cross": basic_conditions["macd_cross_up"] & basic_conditions["sma_50_above_200"],
+        "oversold_condition": basic_conditions["rsi_less_than_30"] & basic_conditions["close_less_than_lower_bb"] & basic_conditions["macd_cross_down"],
+        "stoch_oversold": basic_conditions["slowk_less_than_20"] & basic_conditions["slowd_less_than_20"] & basic_conditions["close_less_than_lower_bb"] & basic_conditions["rsi_less_than_30"],
+        "bullish_ichimoku": basic_conditions["close_greater_than_senkou_span_a"] & basic_conditions["senkou_span_a_greater_than_b"] & basic_conditions["macd_cross_up"] & basic_conditions["sma_50_above_200"],
+        "bearish_cross": basic_conditions["macd_cross_down"] & basic_conditions["sma_50_below_200"] & basic_conditions["rsi_greater_than_70"],
+        "overbought_condition": basic_conditions["rsi_greater_than_70"] & basic_conditions["close_greater_than_upper_bb"] & basic_conditions["macd_cross_down"],
+        "stoch_overbought": basic_conditions["slowk_greater_than_80"] & basic_conditions["slowd_greater_than_80"] & basic_conditions["close_greater_than_upper_bb"] & basic_conditions["rsi_less_than_70"],
+        "bearish_ichimoku": basic_conditions["close_less_than_senkou_span_a"] | basic_conditions["close_less_than_senkou_span_b"] & basic_conditions["macd_cross_down"] & basic_conditions["sma_50_below_200"],
+        "hold_condition": basic_conditions["close_in_sma_50_band"],
+        "cover_signals_fib": basic_conditions["close_in_fib_0_band"] & basic_conditions["macd_cross_up"] & basic_conditions["sma_50_above_200"] & basic_conditions["portfolio_has_short_position"],
+        "short_signals_fib": basic_conditions["close_in_fib_1_band"] & basic_conditions["macd_cross_down"] & basic_conditions["sma_50_below_200"] & basic_conditions["portfolio_has_short_position"],
+        "buy_signals_fib": basic_conditions["close_in_fib_0_band"] & basic_conditions["macd_cross_up"] & basic_conditions["sma_50_above_200"] & basic_conditions["portfolio_no_position"],
+        "sell_signals_fib": basic_conditions["close_in_fib_2_band"] & basic_conditions["macd_cross_down"] & basic_conditions["sma_50_below_200"] & basic_conditions["portfolio_has_position"],
+    }
+
+def generate_advanced_conditions(basic_conditions, composite_conditions):
+    other_conditions = {
+        "advanced_bullish_cross": composite_conditions["bullish_cross"] & basic_conditions["close_in_fib_0_band"],
+        "advanced_bearish_cross": composite_conditions["bearish_cross"] & basic_conditions["close_in_fib_2_band"],
+        "advanced_bullish_ichimoku": composite_conditions["bullish_ichimoku"] & basic_conditions["close_in_sma_50_band"],
+        "advanced_bearish_ichimoku": composite_conditions["bearish_ichimoku"] & basic_conditions["close_in_sma_50_band"],
+        "high_risk_bullish": composite_conditions["overbought_condition"] & basic_conditions["portfolio_no_position"],
+        "high_risk_bearish": composite_conditions["oversold_condition"] & basic_conditions["portfolio_has_position"],
+        "lower_risk_bullish": composite_conditions["stoch_oversold"] & basic_conditions["portfolio_no_position"],
+        "lower_risk_bearish": composite_conditions["stoch_overbought"] & basic_conditions["portfolio_has_position"],
+        "exit_bullish": composite_conditions["bullish_cross"] & basic_conditions["portfolio_has_position"],
+        "exit_bearish": composite_conditions["bearish_cross"] & basic_conditions["portfolio_has_short_position"],
+    }
+    other_conditions_sum = sum(other_conditions.values())
+    hold_condition = other_conditions_sum == 0
+    return {**other_conditions, "hold": hold_condition}
+
 
 def generate_trading_signals(df, portfolio, market_regime):
     try:
@@ -118,101 +203,71 @@ def generate_trading_signals(df, portfolio, market_regime):
         signals['short_sell_price'] = 0.0
         signals['num_shares_shorted'] = 0
 
-
-
-        # for idx, row in df.iterrows():
-
-
-    # Choose action with highest score and generate signal accordingly
-        
-
-        # Choose action with highest score and generate signal accordingly
         for idx, row in df.iterrows():
+            basic_conditions = generate_basic_conditions(row, portfolio)
+            composite_conditions = generate_composite_conditions(basic_conditions)
+            advanced_conditions = generate_advanced_conditions(basic_conditions, composite_conditions)
 
-            conditions = {
-                "bullish_cross": (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']),
-                "oversold_condition": (row['rsi'] < 30) & (row['close'] < row['lower_bb']) & (row['macd'] < row['macd_signal']),
-                "stoch_oversold": (row['slowk'] < 20) & (row['slowd'] < 20) & (row['close'] < row['lower_bb']) & (row['rsi'] >= 30),
-                "bullish_ichimoku": (row['close'] > row['senkou_span_a']) & (row['senkou_span_a'] > row['senkou_span_b']) & (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']),
-                "bearish_cross": (row['macd'] < row['macd_signal']) & (row['sma_50'] < row['sma_200']) & (row['rsi'] > 70),
-                "overbought_condition": (row['rsi'] > 70) & (row['close'] > row['upper_bb']) & (row['macd'] < row['macd_signal']),
-                "stoch_overbought": (row['slowk'] > 80) & (row['slowd'] > 80) & (row['close'] > row['upper_bb']) & (row['rsi'] <= 70),
-                "bearish_ichimoku": (row['close'] < row['senkou_span_a']) | (row['close'] < row['senkou_span_b']) & (row['macd'] < row['macd_signal']) & (row['sma_50'] < row['sma_200']),
-                "cover_signals_fib": (row['close'] > row['fib_0']) & (row['close'] < row['fib_0.236']) & (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']),
-                "hold_condition": (row['close'] > 0.95*row['sma_50']) & (row['close'] < 1.05*row['sma_50']),
-                "cover_signals_fib": (row['close'] > row['fib_0']) & (row['close'] < row['fib_0.236']) & (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']) & (portfolio.get_short_positions().get(row['symbol'], {}).get('shares', 0) > 0),
-                "short_signals_fib": (row['close'] > row['fib_0.786']) & (row['close'] < row['fib_1']) & (row['macd'] < row['macd_signal']) & (row['sma_50'] < row['sma_200']) & (portfolio.get_short_positions().get(row['symbol'], {}).get('shares', 0) < 0),
-                "buy_signals_fib": (row['close'] > row['fib_0']) & (row['close'] < row['fib_0.236']) & (row['macd'] > row['macd_signal']) & (row['sma_50'] > row['sma_200']) & (portfolio.positions.get(row['symbol'], {}).get('shares', 0) == 0),
-                "sell_signals_fib": (row['close'] > row['fib_0.618']) & (row['close'] < row['fib_0.786']) & (row['macd'] < row['macd_signal']) & (row['sma_50'] < row['sma_200']) & (portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0),
 
-                }
-            # Define weights for each market regime
             weights_by_regime = {
                 'bullish': {
-                    "bullish_cross": 2.5,
-                    "oversold_condition": 2.0, 
-                    "stoch_oversold": 1.5,  
-                    "bullish_ichimoku": 3.5,  
-                    "buy_signals_fib": 2.5,  
+                    "advanced_bullish_cross": 4.0,
+                    "lower_risk_bullish": 3.5,
+                    "high_risk_bullish": 2.0,
+                    "advanced_bullish_ichimoku": 3.0,
+                    "hold": 1.0,
                 },
                 'bearish': {
-                    "bearish_cross": 2.6,  
-                    "overbought_condition": 2.1,
-                    "stoch_overbought": 1.4,  
-                    "bearish_ichimoku": 3.7,  
-                    "sell_signals_fib": 2.4,  
+                    "advanced_bearish_cross": 4.0,
+                    "high_risk_bearish": 2.0,
+                    "lower_risk_bearish": 3.5,
+                    "advanced_bearish_ichimoku": 3.0,
+                    "hold": 1.0,
                 },
                 'low_volatility': {
-                    "hold_condition": 3.5,
+                    "exit_bullish": 4.0,
+                    "hold": 1.0,
                 },
                 'high_volatility': {
-                    "short_signals_fib": 2.8,  
-                    "cover_signals_fib": 2.8,  
+                    "exit_bearish": 4.0,
+                    "hold": 1.0,
                 }
             }
 
-            # Get weights for current market regime
+
+
+            # Merge all the conditions
+            all_conditions = {**basic_conditions, **composite_conditions, **advanced_conditions}
+
             weights = weights_by_regime.get(market_regime, {})
+            # conditions_for_actions = {key: [key] for key in all_conditions.keys()}
 
-        
-
-
-            # Compute scores for each action
-
-            conditions_for_actions = {
-                "buy": ["bullish_cross", "oversold_condition", "stoch_oversold", "bullish_ichimoku", "buy_signals_fib"],
-                "sell": ["bearish_cross", "overbought_condition", "stoch_overbought", "bearish_ichimoku", "sell_signals_fib"],
-                "short": ["bearish_cross", "overbought_condition", "stoch_overbought", "bearish_ichimoku", "short_signals_fib"],
-                "cover": ["bullish_cross", "oversold_condition", "stoch_oversold", "bullish_ichimoku", "cover_signals_fib"],
-                "hold": ["hold_condition"]
+            actions_to_conditions = {
+                "buy": ["advanced_bullish_cross", "lower_risk_bullish", "high_risk_bullish", "advanced_bullish_ichimoku"],
+                "sell": ["advanced_bearish_cross", "lower_risk_bearish", "high_risk_bearish", "advanced_bearish_ichimoku"],
+                "short": ["high_risk_bearish", "advanced_bearish_ichimoku", "lower_risk_bearish"],
+                "cover": ["high_risk_bullish", "advanced_bullish_ichimoku", "lower_risk_bullish"],
+                "hold": ["exit_bullish", "exit_bearish", "hold"]
             }
 
-            # Calculate scores for this row
-            scores = {action: sum(weights.get(condition, 0) * conditions[condition] for condition in conditions_for_action) for action, conditions_for_action in conditions_for_actions.items()}
 
-    
+            scores = {action: sum(weights.get(condition, 0) * all_conditions[condition] for condition in actions_to_conditions[action]) for action in actions_to_conditions}
 
-
-
-            #if all scores are zero set to hold
             if all(value == 0 for value in scores.values()):
                 scores['hold'] = 3.0
 
-
-            # # Choose the action for this row
-            
-            # # Now modify scores based on portfolio conditions for this row
+            # Now modify scores based on portfolio conditions for this row
             if portfolio.positions.get(row['symbol'], {}).get('shares', 0) <= 0:
                 scores['sell'] = 0.0
 
             if portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0:
                 scores['short'] = 0.0
-                
-            if portfolio.positions.get(row['symbol'], {}).get('shares', 0) >= 0:
-                scores['cover'] = 0.0
 
+            if portfolio.positions.get(row['symbol'], {}).get('short_shares', 0) <= 0:
+                scores['cover'] = 0.0
             max_score_action = max(scores, key=lambda action: scores[action])
-            # print(portfolio.positions.get(row['symbol'], {}).get('shares', 0))
+
+
             print(scores)
             if row['symbol'] in portfolio.positions:
                 print(portfolio.positions[row['symbol']]['shares'])
@@ -228,13 +283,9 @@ def generate_trading_signals(df, portfolio, market_regime):
             elif max_score_action == "short":
 
                 signals.at[idx, 'signal'] = 'short'
-
                 signals.at[idx, 'short_sell_price'] = df.at[idx, 'close']
-
                 signals.at[idx, 'num_shares_shorted'] = portfolio.buying_power // signals.at[idx, 'short_sell_price']
-
                 signals.at[idx, 'profit'] = signals.at[idx, 'num_shares_shorted'] * (signals.at[idx, 'short_sell_price'] - df.at[idx, 'close'])
-
 
             elif max_score_action == "sell" and portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0:
                 signals.at[idx, 'signal'] = 'sell'
