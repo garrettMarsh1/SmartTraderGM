@@ -7,7 +7,9 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
 from portfolio import Portfolio
-from trading_signals import get_tiingo_data, calculate_technical_indicators, generate_trading_signals
+from data_fetching import get_tiingo_data
+from data_processing import calculate_technical_indicators
+from trading_signals import generate_trading_signals
 
 app = Flask(__name__)
 CORS(app)

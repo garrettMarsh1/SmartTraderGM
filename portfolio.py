@@ -3,16 +3,7 @@ from datetime import timedelta, datetime
 import math
 import time
 import alpaca_trade_api as tradeapi
-from matplotlib import pyplot as plt
-import numpy as np
-import requests
-from sklearn.preprocessing import MinMaxScaler
-from trading_signals import TIINGO_API_KEY, generate_trading_signals
-import talib
-import os
-
-
-import pandas as pd
+import asyncio
 
 
 class Portfolio:
@@ -79,55 +70,67 @@ class Portfolio:
             del self.positions[symbol]
             self.update_positions()
 
-    def execute_trade(self, symbol, signal):
+    async def execute_trade(self, symbol, signal, retries=3):
         self.check_rate_limit()
-        print(f'Symbol: {symbol}, Signal: {signal}')
+        # print(f'Symbol: {symbol}, Signal: {signal}')
 
-        if signal == 'buy':
-            self.buy(symbol)
-            print(f"Executing buy for {symbol}.")
-            time.sleep(1.5)
-        elif signal == 'sell':
-            #no shares to sell check
-            if symbol not in self.positions:
-                print(f"No shares of {symbol} to sell. Skipping trade.")
-                return
-            else:
-                print(f"Executing sell for {symbol}.")
-                self.sell(symbol)
-                time.sleep(1.5)
-        elif signal == 'short':
-            #buying power check before short
-            print(f"Executing short for {symbol}.")
-            print(self.buying_power)
-            if self.buying_power < 0:
-                print(f"Not enough buying power to short {symbol}. Skipping trade.")
-                return
-            else:
-                print(f"Executing short for {symbol}.")
-                self.short(symbol)
-                time.sleep(1.5)
+        for i in range(retries):
+            try:
+                if signal == 'buy':
+                    await self.buy(symbol)
+                    print(f"Executing buy for {symbol}.")
+                    await asyncio.sleep(1.5)
+                elif signal == 'sell':
+                    #no shares to sell check
+                    if symbol not in self.positions:
+                        print(f"No shares of {symbol} to sell. Skipping trade.")
+                        return
+                    else:
+                        print(f"Executing sell for {symbol}.")
+                        await self.sell(symbol)
+                        await asyncio.sleep(1.5)
+                elif signal == 'short':
+                    #buying power check before short
+                    print(f"Executing short for {symbol}.")
+                    print(self.buying_power)
+                    if self.buying_power < 0:
+                        print(f"Not enough buying power to short {symbol}. Skipping trade.")
+                        return
+                    else:
+                        print(f"Executing short for {symbol}.")
+                        await self.short(symbol)
+                        await asyncio.sleep(1.5)
 
-        elif signal == 'cover':
-            print(f"Executing cover for {symbol}.")
-            self.cover(symbol)
-            time.sleep(1.5)
-            
-    def short(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
+                elif signal == 'cover':
+                    print(f"Executing cover for {symbol}.")
+                    await self.cover(symbol)
+                    await asyncio.sleep(1.5)
+                
+                # If the code reaches this point, then the order was executed successfully.
+                # So, break the loop.
+                break
+
+            except Exception as e:
+                if i < retries - 1:  # i is zero indexed
+                    await asyncio.sleep(2)  # Wait for 2 seconds before retrying
+                    continue
+                else:
+                    # If this is the final attempt and it still failed, re-raise the exception.
+                    print(f"Order failed after {retries} attempts.")
+                    raise e
+                    
+    async def short(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
         self.check_rate_limit()
         qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))  # 10% fraction to invest
-        print(qty)
         if qty > self.min_qty:
             total_cost = qty * self.get_latest_price(symbol)
             if total_cost > self.buying_power:
                 print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
                 return            
 
-            # Calculate the stop loss and take profit prices
             current_price = self.get_latest_price(symbol)
             stop_loss_price = round(current_price * (1 + stop_loss_percentage), 2)
             take_profit_price = round(current_price * (1 - take_profit_percentage), 2)
-
 
             order = self.api.submit_order(
                 symbol=symbol,
@@ -142,28 +145,24 @@ class Portfolio:
 
             while order.status != 'filled':
                 order = self.api.get_order(order.id)
+                await asyncio.sleep(1)  # Non-blocking sleep
 
             print(f"Shorted {qty} shares of {symbol} at {order.filled_avg_price}.")
             self.update_positions()
-
-            # Update the buying power after the short
             self.buying_power -= qty * float(order.filled_avg_price)
 
 
 
 
 
-    def cover(self, symbol):
+    async def cover(self, symbol):
         self.check_rate_limit()
         qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))  
 
         if qty > self.min_qty:
             if symbol in self.positions and self.positions[symbol]['shares'] < 0:
                 current_price = float(self.api.get_latest_trade(symbol).price)
-
                 current_price = self.get_latest_price(symbol)
-
-                
 
                 order = self.api.submit_order(
                     symbol=symbol,
@@ -172,9 +171,10 @@ class Portfolio:
                     type='market',
                     time_in_force='day'
                 )
+
                 while order.status != 'filled':
                     order = self.api.get_order(order.id)
-                    time.sleep(.5)
+                    await asyncio.sleep(0.5)  # Non-blocking sleep
 
                 self.positions[symbol]['shares'] += qty
                 self.update_positions()
@@ -183,62 +183,59 @@ class Portfolio:
                 if self.positions[symbol]['shares'] == 0:
                     self.positions[symbol]['buy_price'] = 0.0
 
-                # Update the buying power after the cover
                 self.buying_power += qty * float(current_price)
 
 
 
     min_qty = 1  # define the minimum order quantity suitable for fractional trading
 
-    def buy(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
-            self.check_rate_limit()
-            qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))
-            print(f'Buying {qty} share(s) of {symbol}')  
-            if qty > self.min_qty:
-                if symbol not in self.positions:
-                    self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
+    async def buy(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
+        self.check_rate_limit()
+        qty = math.floor(self.calculate_buy_quantity(symbol, 0.06))
+        current_price = self.get_latest_price(symbol)
+        limit_price = round(current_price * 1.001, 2)
+        stop_loss_price = round(current_price * (1 - stop_loss_percentage), 2)
+        take_profit_price = round(current_price * (1 + take_profit_percentage), 2)
+        print(f'Buying {qty} share(s) of {symbol}')  
 
-                total_cost = qty * self.get_latest_price(symbol)
-                if total_cost > self.buying_power:
-                    print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
-                    return
+        if qty > self.min_qty:
+            if symbol not in self.positions:
+                self.positions[symbol] = {'shares': 0, 'buy_price': 0.0, 'current_price': 0, 'pl': 0}
+
+            total_cost = qty * limit_price  # The limit price replaces the last price here
+            if total_cost > self.buying_power:
+                print(f"Not enough buying power to buy {qty} shares of {symbol}. Skipping trade.")
+                return
                 
-                
-                current_price = self.get_latest_price(symbol)
-                stop_loss_price = round(current_price * (1 - stop_loss_percentage), 2)
-                take_profit_price = round(current_price * (1 + take_profit_percentage), 2)
 
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side='buy',
+                type='limit',  # Change order type to 'limit'
+                limit_price=limit_price,  # Add limit price
+                time_in_force='gtc',
+                order_class='bracket',
+                take_profit={'limit_price': take_profit_price},
+                stop_loss={'stop_price': stop_loss_price}
+            )
 
-                order = self.api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side='buy',
-                    type='market',
-                    time_in_force='gtc',
-                    order_class='bracket',
-                    take_profit={'limit_price': take_profit_price},
-                    stop_loss={'stop_price': stop_loss_price}
-                )
+            while order.status != 'filled':
+                order = self.api.get_order(order.id)
+                await asyncio.sleep(2)  # Non-blocking sleep
 
-                # Wait for the order to fill
-                while order.status != 'filled':
-                    order = self.api.get_order(order.id)
-                    # print('Waiting for order fill...')
-                    time.sleep(2)
+            self.positions[symbol]['shares'] += qty
+            self.update_positions()
 
-                self.positions[symbol]['shares'] += qty
-                self.update_positions()
-                
-                print(f"Bought {qty} shares of {symbol} at {order.filled_avg_price}.")
-                self.positions[symbol]['buy_price'] = float(order.filled_avg_price)
+            print(f"Bought {qty} shares of {symbol} at {order.filled_avg_price}.")
+            self.positions[symbol]['buy_price'] = float(order.filled_avg_price)
 
-
-                # Update the buying power after the purchase
-                self.buying_power -= qty * float(self.positions[symbol]['buy_price'])
+            self.buying_power -= qty * float(self.positions[symbol]['buy_price'])
 
 
 
-    def sell(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
+
+    async def sell(self, symbol, stop_loss_percentage=0.05, take_profit_percentage=0.10):
         self.check_rate_limit()
         qty = math.floor(self.calculate_sell_quantity(symbol, 0.06))  # 10% fraction to sell
         print(f"Trying to sell {qty} shares of {symbol}.")
@@ -248,24 +245,25 @@ class Portfolio:
                 profit_ratio = current_price / self.positions[symbol]['buy_price']
                 
                 current_price = self.get_latest_price(symbol)
+                limit_price = current_price * 1.001  # set limit price as 0.1% above the current price
                 stop_loss_price = round(current_price * (1 + stop_loss_percentage), 2)
                 take_profit_price = round(current_price * (1 - take_profit_percentage), 2)
-         
+        
                 order = self.api.submit_order(
                     symbol=symbol,
                     qty=qty,
                     side='buy',
-                    type='market',
+                    type='limit',
+                    limit_price=limit_price,
                     time_in_force='gtc',
                     order_class='bracket',
                     take_profit={'limit_price': take_profit_price},
                     stop_loss={'stop_price': stop_loss_price}
                 )
 
-            # Wait for the order to fill
             while order.status != 'filled':
                 order = self.api.get_order(order.id)
-                time.sleep(.5)
+                await asyncio.sleep(0.5)  # Non-blocking sleep
 
             self.positions[symbol]['shares'] -= qty
             self.update_positions()
@@ -274,7 +272,6 @@ class Portfolio:
             if self.positions[symbol]['shares'] == 0:
                 self.positions[symbol]['buy_price'] = 0.0
 
-            # Update the buying power after the sale
             self.buying_power += qty * float(current_price)
 
 
@@ -341,78 +338,7 @@ class Portfolio:
         return qty
 
 
-    def get_market_regime_data(self, symbol, period):
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=period)
 
-        url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Token {TIINGO_API_KEY}"
-        }
-        params = {
-            "startDate": start_date.strftime('%Y-%m-%d'),
-            "endDate": end_date.strftime('%Y-%m-%d')
-        }
-
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code != 200:
-            print(f"API request failed with status code: {response.status_code}")
-            return None
-
-        data = response.json()
-
-        df = pd.DataFrame(data)
-
-        df.set_index("date", inplace=True)
-        return df
-
-    
-    def get_market_regime(self, symbol, short_period=10, long_period=20, adx_period=14, atr_period=14):
-        self.check_rate_limit()
-            
-        required_period = max(long_period+1000, adx_period+1000, atr_period+1000)
-        market_data = self.get_market_regime_data(symbol, period=required_period)
-        market_data['symbol'] = symbol
-
-        close = market_data['close']
-        high = market_data['high']
-        low = market_data['low']
-
-        short_sma = talib.SMA(close, timeperiod=short_period)
-        long_sma = talib.SMA(close, timeperiod=long_period)
-        adx = talib.ADX(high, low, close, timeperiod=adx_period)
-        atr = talib.ATR(high, low, close, timeperiod=atr_period)
-
-        sma_trend = (short_sma > long_sma).astype(int) - (short_sma < long_sma).astype(int)
-
-        market_data = market_data.assign(
-            short_sma=short_sma,
-            long_sma=long_sma,
-            adx=adx,
-            atr=atr,
-            sma_trend=sma_trend,
-        )
-
-        atr_threshold = 1.5 * atr.median()
-        market_data['median_atr'] = atr.median()
-
-        market_data.to_csv(f'./market_regime_data/{symbol}_market_regime.csv')
-        #fill with 0s
-        market_data = market_data.fillna(0)
-
-        last_sma_trend = sma_trend.iat[-1]
-        last_adx = adx.iat[-1]
-        last_atr = atr.iat[-1]
-
-        if last_sma_trend > 0 and last_adx > 25:
-            return 'bullish'
-        elif last_sma_trend < 0 and last_adx > 25:
-            return 'bearish'
-        elif last_atr < atr_threshold:
-            return 'low_volatility'
-        else:
-            return 'high_volatility'
 
 
 
@@ -425,28 +351,28 @@ class Portfolio:
         return short_positions
 
     
-    def optimize_portfolio(self):
-        # Get the current portfolio
-        self.check_rate_limit()
-        current_portfolio = self.api.list_positions()
+    # def optimize_portfolio(self):
+    #     # Get the current portfolio
+    #     self.check_rate_limit()
+    #     current_portfolio = self.api.list_positions()
 
-        # Calculate the equal weight for each asset
-        equal_weight = 1.0 / len(current_portfolio)
+    #     # Calculate the equal weight for each asset
+    #     equal_weight = 1.0 / len(current_portfolio)
 
-        # Adjust the portfolio to the target weights
-        for position in current_portfolio:
-            symbol = position.symbol
-            # Get the current price of the stock
-            current_price = self.api.get_latest_trade(symbol).price
-            # Calculate the target quantity
-            target_quantity = int((equal_weight * float(self.api.get_account().buying_power)) / current_price)
-            print(target_quantity)
-            # Check if target_quantity is greater than 0 before submitting the order
-            if target_quantity > 0:
-                # Submit the order with a limit price (here, the current price is used as the limit price)
-                self.api.submit_order(symbol, target_quantity, 'buy', 'limit', 'day', limit_price=current_price)
-            else:
-                print(f"Insufficient buying power to purchase {symbol}, or target quantity is 0.")
+    #     # Adjust the portfolio to the target weights
+    #     for position in current_portfolio:
+    #         symbol = position.symbol
+    #         # Get the current price of the stock
+    #         current_price = self.api.get_latest_trade(symbol).price
+    #         # Calculate the target quantity
+    #         target_quantity = int((equal_weight * float(self.api.get_account().buying_power)) / current_price)
+    #         print(target_quantity)
+    #         # Check if target_quantity is greater than 0 before submitting the order
+    #         if target_quantity > 0:
+    #             # Submit the order with a limit price (here, the current price is used as the limit price)
+    #             self.api.submit_order(symbol, target_quantity, 'buy', 'limit', 'day', limit_price=current_price)
+    #         else:
+    #             print(f"Insufficient buying power to purchase {symbol}, or target quantity is 0.")
     
 
 

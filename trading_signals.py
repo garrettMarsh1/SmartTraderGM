@@ -10,123 +10,10 @@ import asyncio
 
 time_last_request = time.time()
 requests_made = 0
-def check_rate_limit_tiingo():
-    # Add 1 to the number of requests made
-    global requests_made
-    global time_last_request
-    requests_made += 1
-    print(f"Tiingo Requests made: {requests_made}")
 
-    # If 60 seconds have passed since the last request reset the counter
-    if time.time() - time_last_request >= 60:
-        requests_made = 0
-        time_last_request = time.time()
-    elif requests_made >= 200:  # If the limit is hit, sleep for 60 seconds
-        print("Rate limit hit! Waiting 60 seconds...")
-        time.sleep(60)
-        requests_made = 0
-        time_last_request = time.time()
-
-
-# Tiingo API Key
-TIINGO_API_KEY = os.environ.get("TIINGO_API_KEY")
-
-def get_tiingo_data(symbol, start_date, end_date):
-    url = f"https://api.tiingo.com/iex/{symbol}/prices"
-    headers = {"Content-Type": "application/json","Authorization": f"Token {'6ceb439fce674f4b793a7ff074b9ca443d1c79bf'}"}
-    params = {"startDate": start_date, "endDate": end_date, "resampleFreq": "1min"}
-    response = requests.get(url, headers=headers, params=params)
-    data = response.json()
-    
-    if not data:
-        print(f"No data returned from API for symbol: {symbol}")
-        return None
-    
-    df = pd.DataFrame(data)
-    df['symbol'] = symbol
-    df.set_index("date", inplace=True)
-    return df
-
-
-
-
-
-
-def calculate_ichimoku(df):
-    high_prices = df['high']
-    close_prices = df['close']
-    low_prices = df['low']
-
-    # Tenkan-sen (Conversion Line): (9-period high + 9-period low)/2
-    period9_high = high_prices.rolling(window=9).max()
-    period9_low = low_prices.rolling(window=9).min()
-    df['tenkan_sen'] = (period9_high + period9_low) / 2
-
-    # Kijun-sen (Base Line): (26-period high + 26-period low)/2
-    period26_high = high_prices.rolling(window=26).max()
-    period26_low = low_prices.rolling(window=26).min()
-    df['kijun_sen'] = (period26_high + period26_low) / 2
-
-    # Senkou Span A (Leading Span A): (Conversion Line + Base Line)/2
-    df['senkou_span_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(26)
-
-    # Senkou Span B (Leading Span B): (52-period high + 52-period low)/2
-    period52_high = high_prices.rolling(window=52).max()
-    period52_low = low_prices.rolling(window=52).min()
-    df['senkou_span_b'] = ((period52_high + period52_low) / 2).shift(26)
-
-    # The most current closing price plotted 22 time periods behind (optional)
-    df['chikou_span'] = close_prices.shift(-22)
-
-    # Return dataframe with Ichimoku components
-    return df
-
-def fibonacci_retracement(df):
-    # Calculate the rolling high and low for the full period
-    df['rolling_high'] = df['high'].rolling(window=len(df), min_periods=1).max()
-    df['rolling_low'] = df['low'].rolling(window=len(df), min_periods=1).min()
-
-    # Calculate the difference between the high and low
-    diff = df['rolling_high'] - df['rolling_low']
-    
-    # Calculate Fibonacci levels and store them in the DataFrame
-    levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
-    for level in levels:
-        df[f'fib_{level}'] = df['rolling_high'] - diff * level
-
-    # Drop the rolling high and low as they're no longer needed
-    df = df.drop(columns=['rolling_high', 'rolling_low'])
-
-    return df
-
-
-
-# Function to Calculate Technical Indicators including Ichimoku cloud
-def calculate_technical_indicators(df):
-    close = np.array(df['close'], dtype='f8')
-    high = np.array(df['high'], dtype='f8')
-    low = np.array(df['low'], dtype='f8')
-
-    # Calculate Technical Indicators
-    df['sma_50'] = talib.SMA(close, timeperiod=50)
-    df['sma_200'] = talib.SMA(close, timeperiod=200)
-    df['upper_bb'], df['middle_bb'], df['lower_bb'] = talib.BBANDS(close, timeperiod=20)
-    df['rsi'] = talib.RSI(close, timeperiod=14)
-    df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
-    df['slowk'], df['slowd'] = talib.STOCH(high, low, close, fastk_period=14, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
-    df['adx'] = talib.ADX(high, low, close, timeperiod=14)
-    df['cci'] = talib.CCI(high, low, close, timeperiod=14)
-    
-    # Calculate Ichimoku cloud components
-    df = calculate_ichimoku(df)
-    df = fibonacci_retracement(df)
-    
-    # Fill NaN values with 0
-    df.fillna(0, inplace=True)
-    
-    return df
 
 def generate_basic_conditions(row, portfolio):
+    short_positions = portfolio.get_short_positions() if portfolio.get_short_positions() else {}
     return {
         "macd_cross_up": row['macd'] > row['macd_signal'],
         "macd_cross_down": row['macd'] < row['macd_signal'],
@@ -151,11 +38,49 @@ def generate_basic_conditions(row, portfolio):
         "close_in_fib_1_band": (row['close'] > row['fib_0.786']) & (row['close'] < row['fib_1']),
         "close_in_fib_2_band": (row['close'] > row['fib_0.618']) & (row['close'] < row['fib_0.786']),
         "portfolio_has_position": portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0,
-        "portfolio_has_short_position": portfolio.get_short_positions().get(row['symbol'], {}).get('shares', 0) < 0,
+        "portfolio_has_short_position": short_positions.get(row['symbol'], {}).get('shares', 0) < 0,
         "portfolio_no_position": portfolio.positions.get(row['symbol'], {}).get('shares', 0) == 0,
+
     }
 
+def generate_basic_daily_conditions(row, portfolio):
+    short_positions = portfolio.get_short_positions() if portfolio.get_short_positions() else {}
+
+    return{
+        # Add daily conditions
+        "macd_cross_up_daily": row['macd_daily'] > row['macd_signal_daily'],
+        "macd_cross_down_daily": row['macd_daily'] < row['macd_signal_daily'],
+        "sma_50_above_200_daily": row['sma_50_daily'] > row['sma_200_daily'],
+        "sma_50_below_200_daily": row['sma_50_daily'] < row['sma_200_daily'],
+        "rsi_less_than_30_daily": row['rsi_daily'] < 30,
+        "rsi_less_than_70_daily": row['rsi_daily'] < 70,
+        "rsi_greater_than_70_daily": row['rsi_daily'] > 70,
+        "close_less_than_lower_bb_daily": row['close'] < row['lower_bb_daily'],
+        "close_greater_than_upper_bb_daily": row['close'] > row['upper_bb_daily'],
+        "slowk_less_than_20_daily": row['slowk_daily'] < 20,
+        "slowd_less_than_20_daily": row['slowd_daily'] < 20,
+        "slowk_greater_than_80_daily": row['slowk_daily'] > 80,
+        "slowd_greater_than_80_daily": row['slowd_daily'] > 80,
+        "close_greater_than_senkou_span_a_daily": row['close'] > row['senkou_span_a_daily'],
+        "senkou_span_a_greater_than_b_daily": row['senkou_span_a_daily'] > row['senkou_span_b_daily'],
+        "close_less_than_senkou_span_a_daily": row['close'] < row['senkou_span_a_daily'],
+        "close_less_than_senkou_span_b_daily": row['close'] < row['senkou_span_b_daily'],
+        "close_in_sma_50_band_daily": (row['close'] > 0.95*row['sma_50_daily']) & (row['close'] < 1.05*row['sma_50_daily']),
+        "close_in_fib_0_band_daily": (row['close'] > row['fib_0_daily']) & (row['close'] < row['fib_0.236_daily']),
+        "close_in_fib_0.5_band_daily": (row['close'] > row['fib_0.5_daily']) & (row['close'] < row['fib_0.618_daily']),
+        "close_in_fib_1_band_daily": (row['close'] > row['fib_0.786_daily']) & (row['close'] < row['fib_1_daily']),
+        "close_in_fib_2_band_daily": (row['close'] > row['fib_0.618_daily']) & (row['close'] < row['fib_0.786_daily']),
+        "portfolio_has_position": portfolio.positions.get(row['symbol'], {}).get('shares', 0) > 0,
+        "portfolio_has_short_position": short_positions.get(row['symbol'], {}).get('shares', 0) < 0,
+        "portfolio_no_position": portfolio.positions.get(row['symbol'], {}).get('shares', 0) == 0,
+    }
+    
+
+
+
 def generate_composite_conditions(basic_conditions):
+
+
     return {
         "bullish_cross": basic_conditions["macd_cross_up"] & basic_conditions["sma_50_above_200"],
         "oversold_condition": basic_conditions["rsi_less_than_30"] & basic_conditions["close_less_than_lower_bb"] & basic_conditions["macd_cross_down"],
@@ -172,6 +97,24 @@ def generate_composite_conditions(basic_conditions):
         "sell_signals_fib": basic_conditions["close_in_fib_2_band"] & basic_conditions["macd_cross_down"] & basic_conditions["sma_50_below_200"] & basic_conditions["portfolio_has_position"],
     }
 
+def generate_composite_daily_conditions(basic_conditions):
+
+    return{
+        "bullish_cross_daily": basic_conditions["macd_cross_up_daily"] & basic_conditions["sma_50_above_200_daily"],
+        "bearish_cross_daily": basic_conditions["macd_cross_down_daily"] & basic_conditions["sma_50_below_200_daily"] & basic_conditions["rsi_greater_than_70_daily"],
+        "oversold_condition_daily": basic_conditions["rsi_less_than_30_daily"] & basic_conditions["close_less_than_lower_bb_daily"] & basic_conditions["macd_cross_down_daily"],
+        "overbought_condition_daily": basic_conditions["rsi_greater_than_70_daily"] & basic_conditions["close_greater_than_upper_bb_daily"] & basic_conditions["macd_cross_down_daily"],
+        "stoch_oversold_daily": basic_conditions["slowk_less_than_20_daily"] & basic_conditions["slowd_less_than_20_daily"] & basic_conditions["close_less_than_lower_bb_daily"] & basic_conditions["rsi_less_than_30_daily"],
+        "stoch_overbought_daily": basic_conditions["slowk_greater_than_80_daily"] & basic_conditions["slowd_greater_than_80_daily"] & basic_conditions["close_greater_than_upper_bb_daily"] & basic_conditions["rsi_less_than_70_daily"],
+        "bullish_ichimoku_daily": basic_conditions["close_greater_than_senkou_span_a_daily"] & basic_conditions["senkou_span_a_greater_than_b_daily"] & basic_conditions["macd_cross_up_daily"] & basic_conditions["sma_50_above_200_daily"],
+        "bearish_ichimoku_daily": basic_conditions["close_less_than_senkou_span_a_daily"] | basic_conditions["close_less_than_senkou_span_b_daily"] & basic_conditions["macd_cross_down_daily"] & basic_conditions["sma_50_below_200_daily"],
+        "hold_condition_daily": basic_conditions["close_in_sma_50_band_daily"],
+        "cover_signals_fib_daily": basic_conditions["close_in_fib_0_band_daily"] & basic_conditions["macd_cross_up_daily"] & basic_conditions["sma_50_above_200_daily"] & basic_conditions["portfolio_has_short_position"],
+        "short_signals_fib_daily": basic_conditions["close_in_fib_1_band_daily"] & basic_conditions["macd_cross_down_daily"] & basic_conditions["sma_50_below_200_daily"] & basic_conditions["portfolio_has_short_position"],
+        "buy_signals_fib_daily": basic_conditions["close_in_fib_0_band_daily"] & basic_conditions["macd_cross_up_daily"] & basic_conditions["sma_50_above_200_daily"] & basic_conditions["portfolio_no_position"],
+        "sell_signals_fib_daily": basic_conditions["close_in_fib_2_band_daily"] & basic_conditions["macd_cross_down_daily"] & basic_conditions["sma_50_below_200_daily"] & basic_conditions["portfolio_has_position"],
+    }
+
 def generate_advanced_conditions(basic_conditions, composite_conditions):
     other_conditions = {
         "advanced_bullish_cross": composite_conditions["bullish_cross"] & basic_conditions["close_in_fib_0_band"],
@@ -184,16 +127,38 @@ def generate_advanced_conditions(basic_conditions, composite_conditions):
         "lower_risk_bearish": composite_conditions["stoch_overbought"] & basic_conditions["portfolio_has_position"],
         "exit_bullish": composite_conditions["bullish_cross"] & basic_conditions["portfolio_has_position"],
         "exit_bearish": composite_conditions["bearish_cross"] & basic_conditions["portfolio_has_short_position"],
+
+
+
     }
     other_conditions_sum = sum(other_conditions.values())
     hold_condition = other_conditions_sum == 0
     return {**other_conditions, "hold": hold_condition}
 
 
-def generate_trading_signals(df, portfolio, market_regime):
+def generate_advanced_daily_conditions(basic_conditions, composite_conditions):
+    other_daily_conditions = {
+        "exit_bullish_daily": composite_conditions["bullish_cross_daily"] & basic_conditions["portfolio_has_position"],
+        "exit_bearish_daily": composite_conditions["bearish_cross_daily"] & basic_conditions["portfolio_has_short_position"],
+        "advanced_bullish_cross_daily": composite_conditions["bullish_cross_daily"] & basic_conditions["close_in_fib_0_band_daily"],
+        "advanced_bearish_cross_daily": composite_conditions["bearish_cross_daily"] & basic_conditions["close_in_fib_2_band_daily"],
+        "advanced_bullish_ichimoku_daily": composite_conditions["bullish_ichimoku_daily"] & basic_conditions["close_in_sma_50_band_daily"],
+        "advanced_bearish_ichimoku_daily": composite_conditions["bearish_ichimoku_daily"] & basic_conditions["close_in_sma_50_band_daily"],
+        "high_risk_bullish_daily": composite_conditions["overbought_condition_daily"] & basic_conditions["portfolio_no_position"],
+        "high_risk_bearish_daily": composite_conditions["oversold_condition_daily"] & basic_conditions["portfolio_has_position"],
+        "lower_risk_bullish_daily": composite_conditions["stoch_oversold_daily"] & basic_conditions["portfolio_no_position"],
+        "lower_risk_bearish_daily": composite_conditions["stoch_overbought_daily"] & basic_conditions["portfolio_has_position"],
+    }
+    other_daily_conditions_sum = sum(other_daily_conditions.values())
+    hold_condition_daily = other_daily_conditions_sum == 0
+    return {**other_daily_conditions, "hold_daily": hold_condition_daily}
+
+def generate_trading_signals(df, daily_df, portfolio, market_regime):
     try:
         print(market_regime)
-        
+        for i in range(5, len(df)):
+            df.loc[i, 'close_price_dropped'] = df.loc[i, 'close'] < df.loc[i - 5, 'close'] * 0.95
+
         signals = pd.DataFrame(index=df.index)
         signals['symbol'] = df['symbol']
         signals['buy_price'] = 0.0
@@ -204,32 +169,49 @@ def generate_trading_signals(df, portfolio, market_regime):
         signals['num_shares_shorted'] = 0
 
         for idx, row in df.iterrows():
+            daily_row = daily_df[daily_df.index <= idx].iloc[-1]
             basic_conditions = generate_basic_conditions(row, portfolio)
             composite_conditions = generate_composite_conditions(basic_conditions)
             advanced_conditions = generate_advanced_conditions(basic_conditions, composite_conditions)
+            basic_daily_conditions = generate_basic_daily_conditions(daily_row, portfolio)
+            composite_daily_conditions = generate_composite_daily_conditions(basic_daily_conditions)
+            advanced_daily_conditions = generate_advanced_daily_conditions(basic_daily_conditions, composite_daily_conditions)
+            
+
 
 
             weights_by_regime = {
                 'bullish': {
                     "advanced_bullish_cross": 4.0,
+                    "advanced_bullish_cross_daily": 2.0,  
                     "lower_risk_bullish": 3.5,
+                    "lower_risk_bullish_daily": 1.75,  
                     "high_risk_bullish": 2.0,
+                    "high_risk_bullish_daily": 1.0,  
                     "advanced_bullish_ichimoku": 3.0,
+                    "advanced_bullish_ichimoku_daily": 1.5,  
                     "hold": 1.0,
                 },
                 'bearish': {
                     "advanced_bearish_cross": 4.0,
+                    "advanced_bearish_cross_daily": 2.0,  
                     "high_risk_bearish": 2.0,
+                    "high_risk_bearish_daily": 1.0,  
                     "lower_risk_bearish": 3.5,
+                    "lower_risk_bearish_daily": 1.75,  
                     "advanced_bearish_ichimoku": 3.0,
+                    "advanced_bearish_ichimoku_daily": 1.5,  
                     "hold": 1.0,
+
                 },
                 'low_volatility': {
                     "exit_bullish": 4.0,
+                    "exit_bullish_daily": 2.0,  
                     "hold": 1.0,
                 },
                 'high_volatility': {
                     "exit_bearish": 4.0,
+                    "exit_bearish_daily": 2.0,  
                     "hold": 1.0,
                 }
             }
@@ -237,18 +219,57 @@ def generate_trading_signals(df, portfolio, market_regime):
 
 
             # Merge all the conditions
-            all_conditions = {**basic_conditions, **composite_conditions, **advanced_conditions}
+            all_conditions = {**basic_conditions, **composite_conditions, **advanced_conditions, **basic_daily_conditions, **composite_daily_conditions, **advanced_daily_conditions}
 
             weights = weights_by_regime.get(market_regime, {})
             # conditions_for_actions = {key: [key] for key in all_conditions.keys()}
 
             actions_to_conditions = {
-                "buy": ["advanced_bullish_cross", "lower_risk_bullish", "high_risk_bullish", "advanced_bullish_ichimoku"],
-                "sell": ["advanced_bearish_cross", "lower_risk_bearish", "high_risk_bearish", "advanced_bearish_ichimoku"],
-                "short": ["high_risk_bearish", "advanced_bearish_ichimoku", "lower_risk_bearish"],
-                "cover": ["high_risk_bullish", "advanced_bullish_ichimoku", "lower_risk_bullish"],
-                "hold": ["exit_bullish", "exit_bearish", "hold"]
+                "buy": [
+                    "advanced_bullish_cross", 
+                    "advanced_bullish_cross_daily", 
+                    "lower_risk_bullish", 
+                    "lower_risk_bullish_daily", 
+                    "high_risk_bullish", 
+                    "high_risk_bullish_daily", 
+                    "advanced_bullish_ichimoku",
+                    "advanced_bullish_ichimoku_daily"
+                ],
+                "sell": [
+                    "advanced_bearish_cross", 
+                    "advanced_bearish_cross_daily", 
+                    "lower_risk_bearish", 
+                    "lower_risk_bearish_daily", 
+                    "high_risk_bearish", 
+                    "high_risk_bearish_daily", 
+                    "advanced_bearish_ichimoku",
+                    "advanced_bearish_ichimoku_daily",
+                ],
+                "short": [
+                    "high_risk_bearish", 
+                    "high_risk_bearish_daily", 
+                    "advanced_bearish_ichimoku", 
+                    "advanced_bearish_ichimoku_daily", 
+                    "lower_risk_bearish",
+                    "lower_risk_bearish_daily"
+                ],
+                "cover": [
+                    "high_risk_bullish", 
+                    "high_risk_bullish_daily", 
+                    "advanced_bullish_ichimoku", 
+                    "advanced_bullish_ichimoku_daily", 
+                    "lower_risk_bullish",
+                    "lower_risk_bullish_daily"
+                ],
+                "hold": [
+                    "exit_bullish", 
+                    "exit_bullish_daily", 
+                    "exit_bearish", 
+                    "exit_bearish_daily", 
+                    "hold"
+                ]
             }
+
 
 
             scores = {action: sum(weights.get(condition, 0) * all_conditions[condition] for condition in actions_to_conditions[action]) for action in actions_to_conditions}
